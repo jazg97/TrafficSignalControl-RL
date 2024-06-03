@@ -16,8 +16,8 @@ This project aims to optimize traffic signal control using deep reinforcement le
 
 1. **Clone the repository**:
     ```bash
-    git clone https://github.com/yourusername/traffic-signal-control-drl.git
-    cd traffic-signal-control-drl
+    git clone https://github.com/jazg97/TrafficSignalControl-RL.git
+    cd TrafficSignalControl-RL
     ```
 
 2. **Set up the environment**:
