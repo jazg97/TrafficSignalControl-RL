@@ -9,5 +9,13 @@
         <phase duration="4"  state="rrrrrrryyyyrrrrrrrrrryyyyrrr"/>
         <phase duration="100"  state="rrrrrrrrrrrGGGrrrrrrrrrrrGGG"/>
         <phase duration="4"  state="rrrrrrrrrrryyyrrrrrrrrrrryyy"/>
+		<phase duration="100" state="rGGGGGGrrrrrrrrrrrrrrrrrrrrr"/>
+        <phase duration="4"  state="ryyyyyyrrrrrrrrrrrrrrrrrrrrr"/>
+        <phase duration="100" state="rrrrrrrrGGGGGGrrrrrrrrrrrrrr"/>
+        <phase duration="4"  state="rrrrrrrryyyyyyrrrrrrrrrrrrrr"/>
+        <phase duration="100" state="rrrrrrrrrrrrrrrGGGGGGrrrrrrr"/>
+        <phase duration="4"  state="rrrrrrrrrrrrrrryyyyyyrrrrrrr"/>
+        <phase duration="100" state="rrrrrrrrrrrrrrrrrrrrrrGGGGGG"/>
+        <phase duration="4"  state="rrrrrrrrrrrrrrrrrrrrrryyyyyy"/>
     </tlLogic>
 </additional>
