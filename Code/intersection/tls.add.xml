@@ -7,15 +7,15 @@
         <phase duration="4"  state="rrryyyyyrrrrrrrrryyyyyrrrrrr"/>
 		<phase duration="100" state="rrrrrrrGGGGrrrrrrrrrrGGGGrrr"/>
         <phase duration="4"  state="rrrrrrryyyyrrrrrrrrrryyyyrrr"/>
-        <phase duration="100"  state="rrrrrrrrrrrGGGrrrrrrrrrrrGGG"/>
-        <phase duration="4"  state="rrrrrrrrrrryyyrrrrrrrrrrryyy"/>
-		<phase duration="100" state="rGGGGGGrrrrrrrrrrrrrrrrrrrrr"/>
-        <phase duration="4"  state="ryyyyyyrrrrrrrrrrrrrrrrrrrrr"/>
-        <phase duration="100" state="rrrrrrrrGGGGGGrrrrrrrrrrrrrr"/>
-        <phase duration="4"  state="rrrrrrrryyyyyyrrrrrrrrrrrrrr"/>
-        <phase duration="100" state="rrrrrrrrrrrrrrrGGGGGGrrrrrrr"/>
-        <phase duration="4"  state="rrrrrrrrrrrrrrryyyyyyrrrrrrr"/>
-        <phase duration="100" state="rrrrrrrrrrrrrrrrrrrrrrGGGGGG"/>
-        <phase duration="4"  state="rrrrrrrrrrrrrrrrrrrrrryyyyyy"/>
+        <phase duration="100"  state="GrrrrrrrrrrGGGGrrrrrrrrrrGGG"/>
+        <phase duration="4"  state="yrrrrrrrrrryyyyrrrrrrrrrryyy"/>
+		<phase duration="100" state="GGGGGGGGrrrrrrrrrrrrrrrrrrrr"/>
+        <phase duration="4"  state="yyyyyyyyrrrrrrrrrrrrrrrrrrrr"/>
+        <phase duration="100" state="rrrrrrrGGGGGGGGrrrrrrrrrrrrr"/>
+        <phase duration="4"  state="rrrrrrryyyyyyyyrrrrrrrrrrrrr"/>
+        <phase duration="100" state="rrrrrrrrrrrrrrGGGGGGGGrrrrrr"/>
+        <phase duration="4"  state="rrrrrrrrrrrrrryyyyyyyyrrrrrr"/>
+        <phase duration="100" state="GrrrrrrrrrrrrrrrrrrrrGGGGGGG"/>
+        <phase duration="4"  state="yrrrrrrrrrrrrrrrrrrrryyyyyyy"/>
     </tlLogic>
 </additional>

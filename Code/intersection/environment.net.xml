@@ -163,18 +163,18 @@
         <phase duration="4"  state="yyyrrrrrrrrrrryyyrrrrrrrrrrr"/>
         <phase duration="24" state="rrrGGGGGrrrrrrrrrGGGGGrrrrrr"/>
         <phase duration="4"  state="rrryyyyyrrrrrrrrryyyyyrrrrrr"/>
-        <phase duration="24" state="rrrrrrrGGGGrrrrrrrrrrGGGGrrr"/>
+		<phase duration="24" state="rrrrrrrGGGGrrrrrrrrrrGGGGrrr"/>
         <phase duration="4"  state="rrrrrrryyyyrrrrrrrrrryyyyrrr"/>
-        <phase duration="24" state="rrrrrrrrrrrGGGrrrrrrrrrrrGGG"/>
-        <phase duration="4"  state="rrrrrrrrrrryyyrrrrrrrrrrryyy"/>
-        <phase duration="24" state="rGGGGGGrrrrrrrrrrrrrrrrrrrrr"/>
-        <phase duration="4"  state="ryyyyyyrrrrrrrrrrrrrrrrrrrrr"/>
-        <phase duration="24" state="rrrrrrrrGGGGGGrrrrrrrrrrrrrr"/>
-        <phase duration="4"  state="rrrrrrrryyyyyyrrrrrrrrrrrrrr"/>
-        <phase duration="24" state="rrrrrrrrrrrrrrrGGGGGGrrrrrrr"/>
-        <phase duration="4"  state="rrrrrrrrrrrrrrryyyyyyrrrrrrr"/>
-        <phase duration="24" state="rrrrrrrrrrrrrrrrrrrrrrGGGGGG"/>
-        <phase duration="4"  state="rrrrrrrrrrrrrrrrrrrrrryyyyyy"/>
+        <phase duration="24"  state="GrrrrrrrrrrGGGGrrrrrrrrrrGGG"/>
+        <phase duration="4"  state="yrrrrrrrrrryyyyrrrrrrrrrryyy"/>
+		<phase duration="24" state="GGGGGGGGrrrrrrrrrrrrrrrrrrrr"/>
+        <phase duration="4"  state="yyyyyyyyrrrrrrrrrrrrrrrrrrrr"/>
+        <phase duration="24" state="rrrrrrrGGGGGGGGrrrrrrrrrrrrr"/>
+        <phase duration="4"  state="rrrrrrryyyyyyyyrrrrrrrrrrrrr"/>
+        <phase duration="24" state="rrrrrrrrrrrrrrGGGGGGGGrrrrrr"/>
+        <phase duration="4"  state="rrrrrrrrrrrrrryyyyyyyyrrrrrr"/>
+        <phase duration="24" state="GrrrrrrrrrrrrrrrrrrrrGGGGGGG"/>
+        <phase duration="4"  state="yrrrrrrrrrrrrrrrrrrrryyyyyyy"/>
     </tlLogic>
 
     <junction id="DE" type="dead_end" x="750.00" y="0.00" incLanes="TL2E_0 TL2E_1 TL2E_2 TL2E_3" intLanes="" shape="750.00,0.00 750.00,-12.80 750.00,0.00"/>
