@@ -47,7 +47,7 @@ def set_train_path(models_path_name):
 
     dir_content = os.listdir(models_path)
     if dir_content:
-        previous_versions = [int(name.split("_")[1]) for name in dir_content]
+        previous_versions = [str(name.split("_")[1]) for name in dir_content]
         new_version = str(max(previous_versions) + 1)
     else:
         new_version = '1'
