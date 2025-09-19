@@ -6,14 +6,20 @@ class TrafficGenerator:
         self._n_cars_generated = n_cars_generated  # how many cars per episode
         self._max_steps = max_steps
 
-    def generate_routefile(self, seed):
+    def generate_routefile(self, seed, distribution='Weibull'):
         """
         Generation of the route of every car for one episode
         """
         np.random.seed(seed)  # make tests reproducible
 
         # the generation of cars is distributed according to a weibull distribution
-        timings = np.random.weibull(2, self._n_cars_generated)
+        if distribution=='Weibull':
+            timings = np.random.weibull(2, self._n_cars_generated)
+        elif distribution=='Poisson':
+            timings = np.random.poisson(16000, self._n_cars_generated)
+        elif distribution=='Pareto':
+            timings = np.random.pareto(3, self._n_cars_generated)
+        
         timings = np.sort(timings)
 
         # reshape the distribution to fit the interval 0:max_steps
@@ -23,7 +29,7 @@ class TrafficGenerator:
         min_new = 0
         max_new = self._max_steps
         for value in timings:
-            car_gen_steps = np.append(car_gen_steps, ((max_new - min_new) / (max_old - min_old)) * (value - max_old) + max_new)
+            car_gen_steps = np.append(car_gen_steps, max(0, ((max_new - min_new) / (max_old - min_old)) * (value - max_old) + max_new)) #np.append(car_gen_steps, ((max_new - min_new) / (max_old - min_old)) * (value - max_old) + max_new)
 
         car_gen_steps = np.rint(car_gen_steps)  # round every value to int -> effective steps when a car will be generated
 
