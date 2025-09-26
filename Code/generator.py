@@ -10,15 +10,15 @@ class TrafficGenerator:
         """
         Generation of the route of every car for one episode
         """
-        np.random.seed(seed)  # make tests reproducible
-
+        #np.random.seed(seed)  # make tests reproducible
+        rng = np.random.default_rng(seed)
         # the generation of cars is distributed according to a weibull distribution
         if distribution=='Weibull':
-            timings = np.random.weibull(2, self._n_cars_generated)
+            timings = rng.weibull(2, self._n_cars_generated)
         elif distribution=='Poisson':
-            timings = np.random.poisson(16000, self._n_cars_generated)
+            timings = rng.poisson(16000, self._n_cars_generated)
         elif distribution=='Pareto':
-            timings = np.random.pareto(3, self._n_cars_generated)
+            timings = rng.pareto(3, self._n_cars_generated)
         
         timings = np.sort(timings)
 
