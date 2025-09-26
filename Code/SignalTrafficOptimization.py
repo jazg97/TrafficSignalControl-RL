@@ -346,7 +346,7 @@ def objective(trial):
     lstm_units = trial.suggest_int("lstm_units", 16, 256, 1)
 
     # Fully-connected hyperparameters
-    num_mlp_layers = trial.suggest_int("num_mlp_layers", 2, 4)
+    num_mlp_layers = trial.suggest_int("num_mlp_layers", 2, 3)
     num_neurons = [int(trial.suggest_discrete_uniform("mlp_neurons_"+str(i), 16, 256, 1)) for i in range(num_mlp_layers-1)]
     mlp_activation = trial.suggest_categorical("mlp_activation", ["relu", "tanh", "sigmoid", "elu", "leaky_relu"])
 
@@ -357,7 +357,7 @@ def objective(trial):
     sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
     path = set_train_path(config['models_path_name'])
     model_path = get_model_path(config['models_path_name'], model_to_test)
-    opt = PPOOptions(entropy_coef = 0.1, T_horizon = 256, eval_interval= 500, K_epochs=15, adv_normalization = True, 
+    opt = PPOOptions(entropy_coef = 0.1, T_horizon = 256, eval_interval= 500, K_epochs=10, adv_normalization = True, 
                      batch_size=16, lr = learning_rate, l2_reg=0.1)
 
     hypers = Modular_Hyperparameters(num_conv_layers, num_filters, strides, kernels_size, lstm_units, num_mlp_layers, num_neurons, mlp_activation)
@@ -425,7 +425,7 @@ def objective(trial):
 
     return weighted_avg
 
-seeds_study = np.arange(0, 800, 1)
+seeds_study = np.arange(0, 600, 1)
 
 def main():
     parser = argparse.ArgumentParser()
