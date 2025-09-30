@@ -8,6 +8,7 @@ import os, shutil
 import scipy
 import random
 import argparse
+from collections import defaultdict
 
 import torch.nn.functional as F
 import torch.nn as nn
@@ -135,15 +136,15 @@ def discount_cumsum(x, discount):
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
-def evaluate_policy(opt, agent, turns: int, volume: int, seed: int):
+def evaluate_policy(opt, agent, turns: int, volume: int, seed: int, traci):
     global results
     total_scores = 0
     total_time = 0
     trafficGen = TrafficGenerator(opt.max_e_steps, volume)
-    evaluation = Simulation(agent, trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, True, opt.dvc)
+    evaluation = Simulation(agent, trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, True, opt.dvc, traci)
     for j in range(turns):
         #episode = random.randint(0, 2**31 - 1)
-        simulation_time, reward = evaluation.run(seed+j)
+        simulation_time, reward = evaluation.run(j+1, seed+j)
         total_scores += reward
         total_time += simulation_time
     return total_scores/turns, total_time
@@ -209,18 +210,14 @@ class PPO_agent():
 
             '''GAE calculation'''
             deltas = r + self.gamma*vs_*(~dw) - vs #self.gamma * vs_ * (~dw)
-            deltas = deltas.cpu().flatten().numpy()            
-            
-            adv = [0]
-
+            adv = torch.zeros_like(deltas)
+            gamma_lambda = self.gamma * self.lambd
+            gae = 0
+            nonterminal = (~done).float()
             '''done for GAE'''
-            for dlt, done in zip(deltas[::-1], done.cpu().flatten().numpy()[::-1]):
-                advantage = dlt + self.gamma * self.lambd * adv[-1] * (~done)
-                adv.append(advantage)
-            adv.reverse()
-            #adv = discount_cumsum(deltas, self.gamma * self.lambd)            
-            adv = copy.deepcopy(adv[:-1])
-            adv = torch.tensor(adv).unsqueeze(1).float().to(self.dvc)
+            for t in range(deltas.shape[0]-1, -1, -1):
+                gae = deltas[t] + gamma_lambda * nonterminal[t] * gae
+                adv[t] = gae
 
             td_target = adv + vs
             if self.adv_normalization:
@@ -229,28 +226,41 @@ class PPO_agent():
         """PPO update"""
         #Slice long trajectopy into short trajectory and perform mini-batch PPO update
         optim_iter_num = int(math.ceil(s.shape[0] / self.batch_size))
+        
+        B = s.shape[0]
 
         for _ in range(self.K_epochs):
             #Shuffle the trajectory, Good for training
-            perm = np.arange(s.shape[0])
-            np.random.shuffle(perm)
-            perm = torch.LongTensor(perm).to(self.dvc)
-            s, a, td_target, adv, old_prob_a, f1, f2 = \
-                s[perm].clone(), a[perm].clone(), td_target[perm].clone(), adv[perm].clone(), old_prob_a[perm].clone(), first_hidden[0][:, perm, :].clone(), first_hidden[1][:, perm, :].clone()
+            #perm = torch.randperm(#np.arange(s.shape[0])
+            #np.random.shuffle(perm)
+            #perm = torch.LongTensor(perm).to(self.dvc)
+            perm = torch.randperm(B, device = self.dvc)
+            '''s, a, td_target, adv, old_prob_a, f1, f2 = \
+                s[perm].clone(), a[perm].clone(), td_target[perm].clone(), adv[perm].clone(), old_prob_a[perm].clone(), first_hidden[0][:, perm, :].clone(), first_hidden[1][:, perm, :].clone()'''
+                
+            s_perm = s.index_select(0, perm)
+            a_perm = a.index_select(0, perm)
+            adv_perm = adv.index_select(0, perm)
+            td_perm = td_target.index_select(0, perm)
+            old_prob_a = old_prob_a.index_select(0, perm)
+            
+            f1 = first_hidden[0].index_select(1, perm)
+            f2 = first_hidden[1].index_select(1, perm)
             '''mini-batch PPO update'''
             for i in range(optim_iter_num):
                 index = slice(i * self.batch_size, min((i + 1) * self.batch_size, s.shape[0]))
 
                 self.actor_optimizer.zero_grad()                
                 '''actor update'''
-                prob, _ = self.actor.pi(s[index], (f1[:, index, :], f2[:, index, :]), softmax_dim=-1)
+                prob, _ = self.actor.pi(s_perm[index], (f1[:, index, :], f2[:, index, :]), softmax_dim=-1)
                 prob = prob.view(-1,8)
                 entropy = Categorical(prob).entropy().sum(0, keepdim=True)
-                prob_a = prob.gather(1, a[index])
+                
+                prob_a = prob.gather(1, a_perm[index])
                 ratio = torch.exp(torch.log(prob_a) - old_prob_a[index])  # a/b == exp(log(a)-log(b))
 
-                surr1 = ratio * adv[index]
-                surr2 = torch.clamp(ratio, 1 - self.clip_rate, 1 + self.clip_rate) * adv[index]
+                surr1 = ratio * adv_perm[index]
+                surr2 = torch.clamp(ratio, 1 - self.clip_rate, 1 + self.clip_rate) * adv_perm[index]
                 a_loss = -torch.min(surr1, surr2) - self.entropy_coef * entropy.view(-1,1)
 
                 a_loss.mean().backward()
@@ -259,7 +269,7 @@ class PPO_agent():
 
                 self.critic_optimizer.zero_grad()
                 '''critic update'''
-                c_loss = (self.critic(s[index], (f1[:, index, :], f2[:, index, :])).view(-1,1) - td_target[index]).pow(2).mean()
+                c_loss = (self.critic(s_perm[index], (f1[:, index, :], f2[:, index, :])).view(-1,1) - td_perm[index]).pow(2).mean()
                 for name, param in self.critic.named_parameters():
                     if 'weight' in name:
                         c_loss += param.pow(2).sum() * self.l2_reg
@@ -336,7 +346,7 @@ def objective(trial):
     shuffled_seeds = shuffle(seeds_study, random_state = seed)
 
     # Convolution hyperparameters
-    num_conv_layers = trial.suggest_int("num_conv_layers", 2, 4)
+    num_conv_layers = trial.suggest_int("num_conv_layers", 2, 3)
     num_filters = [int(trial.suggest_discrete_uniform("num_filter_"+str(i), 16, 256, 1))
                    for i in range(num_conv_layers)]
     strides = [trial.suggest_int("stride_size_"+str(i), 1, 3) for i in range(num_conv_layers)]
@@ -347,17 +357,18 @@ def objective(trial):
 
     # Fully-connected hyperparameters
     num_mlp_layers = trial.suggest_int("num_mlp_layers", 2, 3)
-    num_neurons = [int(trial.suggest_discrete_uniform("mlp_neurons_"+str(i), 16, 256, 1)) for i in range(num_mlp_layers-1)]
+    num_neurons = [int(trial.suggest_discrete_uniform("mlp_neurons_"+str(i), 16, 128, 1)) for i in range(num_mlp_layers-1)]
     mlp_activation = trial.suggest_categorical("mlp_activation", ["relu", "tanh", "sigmoid", "elu", "leaky_relu"])
 
     #Training hyperparameters
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
 
     config = import_train_configuration(config_file='training_settings.ini')
-    sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
+    #sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
+    traci, tc, sumo_cmd, using_libsumo = set_sumo(False, config['sumocfg_file_name'], 3600)
     path = set_train_path(config['models_path_name'])
     model_path = get_model_path(config['models_path_name'], model_to_test)
-    opt = PPOOptions(entropy_coef = 0.1, T_horizon = 256, eval_interval= 500, K_epochs=10, adv_normalization = True, 
+    opt = PPOOptions(entropy_coef = 0.1, T_horizon = 180, eval_interval= 500, K_epochs=5, adv_normalization = True, 
                      batch_size=16, lr = learning_rate, l2_reg=0.1)
 
     hypers = Modular_Hyperparameters(num_conv_layers, num_filters, strides, kernels_size, lstm_units, num_mlp_layers, num_neurons, mlp_activation)
@@ -370,7 +381,7 @@ def objective(trial):
     
     green_duration = 7
     yellow_duration = 6
-    total_episodes = 800
+    total_episodes = 300
 
     agent = PPO_agent(**vars(opt), **vars(hypers))
 
@@ -379,9 +390,9 @@ def objective(trial):
 
     visualization = Visualization(path, dpi=96)
         
-    simulation = Simulation(agent,trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, False, opt.dvc)
+    simulation = Simulation(agent,trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, False, opt.dvc, traci)
 
-    evaluation = Simulation(agent,trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, True, opt.dvc)
+    evaluation = Simulation(agent,trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, True, opt.dvc, traci)
 
     episode = 0
     timestamp_start = datetime.datetime.now()
@@ -418,14 +429,14 @@ def objective(trial):
     turns = 20
     for i, volume in enumerate(demand):
         print('Evaluated car volume: {}cars/hour'.format(volume))
-        score, eval_time = evaluate_policy(opt, agent, turns=turns, volume=volume, seed=10000+ i*turns) # evaluate the policy for 3 times, and get averaged result
+        score, eval_time = evaluate_policy(opt, agent, turns=turns, volume=volume, seed=10000+ i*turns, traci = traci) # evaluate the policy for 3 times, and get averaged result
         rewards_perVolume.append(score)
         print('Evaluation time:', eval_time, 's', 'Score:', score)
     weighted_avg = np.average(rewards_perVolume, weights=demand)
 
     return weighted_avg
 
-seeds_study = np.arange(0, 600, 1)
+seeds_study = np.arange(0, 300, 1)
 
 def main():
     parser = argparse.ArgumentParser()

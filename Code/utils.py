@@ -25,17 +25,37 @@ def set_sumo(gui, sumocfg_file_name, max_steps):
         sys.path.append(tools)
     else:
         sys.exit("please declare environment variable 'SUMO_HOME'")
+        
+    from sumolib import checkBinary
+    if gui:
+        sumoBinary = checkBinary("sumo-gui")  # GUI requires classic TraCI (socket)
+        using_libsumo = False
+    else:
+        # headless: prefer libsumo for speed; fallback to classic if not available
+        try:
+            import libsumo as traci  # just to test availability
+            using_libsumo = True
+        except ImportError:
+            using_libsumo = False
+        sumoBinary = checkBinary("sumo")      # headless binary
 
     # setting the cmd mode or the visual mode    
-    if gui == False:
+    '''if gui == False:
         sumoBinary = checkBinary('sumo')
     else:
-        sumoBinary = checkBinary('sumo-gui')
+        sumoBinary = checkBinary('sumo-gui')'''
  
     # setting the cmd command to run sumo at simulation time
     sumo_cmd = [sumoBinary, "-c", os.path.join('intersection', sumocfg_file_name), "--no-step-log", "true", "--waiting-time-memory", str(max_steps), "--start", "--quit-on-end"]
+    
+    if using_libsumo and not gui:
+        import libsumo as traci_like
+        from libsumo import constants as tc
+    else:
+        import traci as traci_like
+        from traci import constants as tc
 
-    return sumo_cmd
+    return traci_like, tc, sumo_cmd, using_libsumo #return sumo_cmd
 
 
 def set_train_path(models_path_name):
