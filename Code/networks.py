@@ -10,7 +10,7 @@ from torch.distributions import Categorical
 
 
 class ModularActor(nn.Module):
-    def __init__(self, num_conv_layers, num_filters, strides, kernels_size, num_mlp_layers, lstm_units, num_neurons, mlp_activation, action_dim):
+    def __init__(self, num_conv_layers, num_filters, strides, kernels_size, num_mlp_layers, lstm_units, num_neurons, action_dim):
         super(ModularActor, self).__init__()
         input_size = np.array((48, 46))
         
@@ -29,7 +29,7 @@ class ModularActor(nn.Module):
         #Create LSTM layer
         self.lstm = nn.LSTM(self.out_features, lstm_units, 1, batch_first=True)
 
-        if mlp_activation == "relu":
+        '''if mlp_activation == "relu":
             self.mlp_activation = nn.ReLU()
         elif mlp_activation == "tanh":
             self.mlp_activation = nn.Tanh()
@@ -38,7 +38,8 @@ class ModularActor(nn.Module):
         elif mlp_activation == "elu":
             self.mlp_activation = nn.ELU()
         elif mlp_activation == "leaky_relu":
-            self.mlp_activation = nn.LeakyReLU(negative_slope=0.01)
+            self.mlp_activation = nn.LeakyReLU(negative_slope=0.01)'''
+        self.mlp_activation = nn.Tanh()
 
         #Create MLP layers
         self.mlps = nn.ModuleList([nn.Linear(lstm_units, num_neurons[0])])
@@ -68,7 +69,7 @@ class ModularActor(nn.Module):
         return prob, lstm_hidden
 
 class ModularCritic(nn.Module):
-    def __init__(self, num_conv_layers, num_filters, strides, kernels_size, num_mlp_layers, lstm_units, num_neurons, mlp_activation):
+    def __init__(self, num_conv_layers, num_filters, strides, kernels_size, num_mlp_layers, lstm_units, num_neurons):
         super(ModularCritic, self).__init__()
         input_size = np.array((48, 46))
         
@@ -87,7 +88,7 @@ class ModularCritic(nn.Module):
         #Create LSTM layer
         self.lstm = nn.LSTM(self.out_features, lstm_units, 1, batch_first=True)
 
-        if mlp_activation == "relu":
+        '''if mlp_activation == "relu":
             self.mlp_activation = nn.ReLU()
         elif mlp_activation == "tanh":
             self.mlp_activation = nn.Tanh()
@@ -96,7 +97,9 @@ class ModularCritic(nn.Module):
         elif mlp_activation == "elu":
             self.mlp_activation = nn.ELU()
         elif mlp_activation == "leaky_relu":
-            self.mlp_activation = nn.LeakyReLU(negative_slope=0.01)
+            self.mlp_activation = nn.LeakyReLU(negative_slope=0.01)'''
+        
+        self.mlp_activation = nn.ReLU()
 
         #Create MLP layers
         self.mlps = nn.ModuleList([nn.Linear(lstm_units, num_neurons[0])])

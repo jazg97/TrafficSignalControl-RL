@@ -124,7 +124,7 @@ class Simulation:
         if not self._eval:
             self._TrafficGen.generate_routefile(seed=seed, distribution=distribution)
         else:
-            self._TrafficGen.generate_routefile(seed=seed+2500, distribution=distribution)
+            self._TrafficGen.generate_routefile(seed=seed, distribution=distribution)
         self.traci.start(self._sumo_cmd)
         '''TLS_ID = "TL"  # your traffic light id
         RADIUS = 300.0  # enough to cover incoming approaches you map to the grid

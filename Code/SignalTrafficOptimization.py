@@ -35,6 +35,7 @@ import sys
 import traci
 import random
 import timeit
+import wandb
 
 from generator import TrafficGenerator
 from memory import Memory     ## Prority Experience Memory 
@@ -44,7 +45,6 @@ from utils import import_train_configuration,set_sumo, set_train_path,get_model_
 
 import warnings
 warnings.filterwarnings('ignore')
-
 
 # phase codes based on SUMO environment.net.xml 
 PHASE_NS_GREEN = 0  # action 0 for Variable Order
@@ -136,7 +136,7 @@ def discount_cumsum(x, discount):
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
-def evaluate_policy(opt, agent, turns: int, volume: int, seed: int, traci):
+def evaluate_policy(opt, agent, turns: int, volume: int, seed: int, traci, sumo_cmd):
     global results
     total_scores = 0
     total_time = 0
@@ -147,7 +147,7 @@ def evaluate_policy(opt, agent, turns: int, volume: int, seed: int, traci):
         simulation_time, reward = evaluation.run(j+1, seed+j)
         total_scores += reward
         total_time += simulation_time
-    return total_scores/turns, total_time
+    return total_scores/turns, total_time, evaluation
 
 
 # Need to update to SUMO environment
@@ -158,14 +158,18 @@ class PPO_agent():
 
         '''Build Actor and Critic'''
         self.actor = ModularActor(self.num_conv_layers, self.num_filters, self.strides, self.kernels_size, 
-                                  self.num_mlp_layers, self.lstm_units, self.mlp_neurons, self.mlp_activation, 
-                                  self.action_dim).to(self.dvc)
+                                  self.num_mlp_layers, self.lstm_units, self.mlp_neurons, self.action_dim).to(self.dvc)
         self.actor.apply(weight_init)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
         self.critic = ModularCritic(self.num_conv_layers, self.num_filters, self.strides, self.kernels_size, 
-                                    self.num_mlp_layers, self.lstm_units, self.mlp_neurons, self.mlp_activation).to(self.dvc)
+                                    self.num_mlp_layers, self.lstm_units, self.mlp_neurons).to(self.dvc)
         self.critic.apply(weight_init)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
+        
+        if self.optimizer == "adamw":
+            self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), lr = self.lr, weight_decay = self.weight_decay, betas = (0.9, 0.999))
+            self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), lr = self.lr, weight_decay = self.weight_decay, betas = (0.9, 0.999))
+        else:
+            self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr, betas = (0.9, 0.999))        
+            self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
 
         '''Build Trajectory holder'''
         self.s_hoder = np.zeros(([self.T_horizon] + self.state_dim), dtype=np.float32) #observation
@@ -210,14 +214,18 @@ class PPO_agent():
 
             '''GAE calculation'''
             deltas = r + self.gamma*vs_*(~dw) - vs #self.gamma * vs_ * (~dw)
-            adv = torch.zeros_like(deltas)
-            gamma_lambda = self.gamma * self.lambd
-            gae = 0
-            nonterminal = (~done).float()
+            deltas = deltas.cpu().flatten().numpy()            
+            
+            adv = [0]
+
             '''done for GAE'''
-            for t in range(deltas.shape[0]-1, -1, -1):
-                gae = deltas[t] + gamma_lambda * nonterminal[t] * gae
-                adv[t] = gae
+            for dlt, done in zip(deltas[::-1], done.cpu().flatten().numpy()[::-1]):
+                advantage = dlt + self.gamma * self.lambd * adv[-1] * (~done)
+                adv.append(advantage)
+            adv.reverse()
+            #adv = discount_cumsum(deltas, self.gamma * self.lambd)            
+            adv = copy.deepcopy(adv[:-1])
+            adv = torch.tensor(adv).unsqueeze(1).float().to(self.dvc)
 
             td_target = adv + vs
             if self.adv_normalization:
@@ -234,10 +242,11 @@ class PPO_agent():
             #perm = torch.randperm(#np.arange(s.shape[0])
             #np.random.shuffle(perm)
             #perm = torch.LongTensor(perm).to(self.dvc)
-            perm = torch.randperm(B, device = self.dvc)
             '''s, a, td_target, adv, old_prob_a, f1, f2 = \
                 s[perm].clone(), a[perm].clone(), td_target[perm].clone(), adv[perm].clone(), old_prob_a[perm].clone(), first_hidden[0][:, perm, :].clone(), first_hidden[1][:, perm, :].clone()'''
-                
+
+
+            perm = torch.randperm(B, device = self.dvc)
             s_perm = s.index_select(0, perm)
             a_perm = a.index_select(0, perm)
             adv_perm = adv.index_select(0, perm)
@@ -327,7 +336,7 @@ class PPOOptions:
 class Modular_Hyperparameters:
     def __init__(self, num_conv_layers: int, num_filters: list, strides: list, 
                  kernels_size: list, lstm_units: int, num_mlp_layers: int, 
-                 mlp_neurons: list, mlp_activation: str):
+                 mlp_neurons: list, optimizer: str, weight_decay: float):
 
         self.num_conv_layers = num_conv_layers
         self.num_filters = num_filters
@@ -336,9 +345,12 @@ class Modular_Hyperparameters:
         self.lstm_units = lstm_units
         self.num_mlp_layers = num_mlp_layers
         self.mlp_neurons = mlp_neurons
-        self.mlp_activation = mlp_activation
+        self.optimizer = optimizer
+        self.weight_decay = weight_decay
 
 model_to_test = 555
+green_duration = 7
+yellow_duration = 6
 
 def objective(trial):
     seed = trial.number
@@ -346,32 +358,95 @@ def objective(trial):
     shuffled_seeds = shuffle(seeds_study, random_state = seed)
 
     # Convolution hyperparameters
-    num_conv_layers = trial.suggest_int("num_conv_layers", 2, 3)
-    num_filters = [int(trial.suggest_discrete_uniform("num_filter_"+str(i), 16, 256, 1))
+    num_conv_layers = trial.suggest_int("num_conv_layers", 1, 2)
+    num_filters = [trial.suggest_categorical("num_filter_"+str(i), [16,32,64,128])
                    for i in range(num_conv_layers)]
-    strides = [trial.suggest_int("stride_size_"+str(i), 1, 3) for i in range(num_conv_layers)]
+    strides = [trial.suggest_int("stride_size_"+str(i), 1, 3, 1) for i in range(num_conv_layers)]
     kernels_size= [trial.suggest_int("kernel_size_"+str(i), 3, 9, 2) for i in range(num_conv_layers)]
 
     #LSTM units
-    lstm_units = trial.suggest_int("lstm_units", 16, 256, 1)
+    lstm_units = trial.suggest_categorical("lstm_units", [16, 32, 64, 128, 256])
 
     # Fully-connected hyperparameters
     num_mlp_layers = trial.suggest_int("num_mlp_layers", 2, 3)
-    num_neurons = [int(trial.suggest_discrete_uniform("mlp_neurons_"+str(i), 16, 128, 1)) for i in range(num_mlp_layers-1)]
-    mlp_activation = trial.suggest_categorical("mlp_activation", ["relu", "tanh", "sigmoid", "elu", "leaky_relu"])
+    num_neurons = [trial.suggest_categorical("mlp_neurons_"+str(i), [32, 64, 128]) for i in range(num_mlp_layers-1)]
+    #mlp_activation = trial.suggest_categorical("mlp_activation", ["relu", "tanh", "elu", "leaky_relu"])
 
     #Training hyperparameters
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-
+    
+    # PPO search space
+    
+    gamma = trial.suggest_float("gamma", 0.98, 0.997, step = 0.001)
+    lambd = trial.suggest_float("lambd", 0.92, 0.98, step = 0.01)
+    clip_range = trial.suggest_float("clip_range", 0.1, 0.25, step = 0.01)
+    
+    entropy_coef = trial.suggest_float("entropy_coef", 1e-3, 2e-2, log=True)
+        
+    optimizer_name = trial.suggest_categorical("optimizer", ["adam", "adamw"])
+    weight_decay = 0.0
+    if optimizer_name == 'adamw':
+        weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-4, log=True)
+        
+    
+    run_config = dict(
+        state_dim = [3, 48, 46],
+        action_dim = 8,
+        max_e_steps = 3600,
+        green_duration = 6,
+        yellow_duration = 7,
+        total_episodes = 800,
+        eval_turns = 10,
+        eval_demand = list(range(1000, 2100, 100)),
+        T_horizon = 256,
+        K_epochs = 10,
+        batch_size = 16,
+        adv_normalization = True,
+        l2_reg = 0.1,
+        traffic_n_cars = 1000,
+        dists = ['Weibull'],
+    )
+    
+    #Initiate logging for wandb
+    
+    run = wandb.init(
+            entity = 'jzapanag',
+            project = 'SignalTrafficControl',
+            name= f"trial-{trial.number}-v1",
+            reinit = True,
+            mode = os.environ.get("WANDB_MODE", "online"),
+            config={
+            "search_space": {
+                "num_conv_layers": num_conv_layers,
+                "num_filters": num_filters,
+                "strides": strides,
+                "kernels_size": kernels_size,
+                "lstm_units": lstm_units,
+                "num_mlp_layers": num_mlp_layers,
+                "num_neurons": num_neurons,
+                "learning_rate": learning_rate,
+                "optimizer": optimizer_name,
+                "weight_decay": weight_decay,
+                "gamma": gamma,
+                "lambd": lambd,
+                "clip_rate": clip_range,
+                "entropy_coef": entropy_coef,                
+            },
+            "run_config": run_config,
+        },
+    )
+    
     config = import_train_configuration(config_file='training_settings.ini')
     #sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
     traci, tc, sumo_cmd, using_libsumo = set_sumo(False, config['sumocfg_file_name'], 3600)
     path = set_train_path(config['models_path_name'])
     model_path = get_model_path(config['models_path_name'], model_to_test)
-    opt = PPOOptions(entropy_coef = 0.1, T_horizon = 180, eval_interval= 500, K_epochs=5, adv_normalization = True, 
-                     batch_size=16, lr = learning_rate, l2_reg=0.1)
+    opt = PPOOptions(entropy_coef = entropy_coef, T_horizon = 256, eval_interval= 500, K_epochs=10, adv_normalization = True, 
+                     batch_size=16, lr = learning_rate, l2_reg=0.1, lambd = lambd, gamma = gamma, clip_rate = clip_range,
+                     )
 
-    hypers = Modular_Hyperparameters(num_conv_layers, num_filters, strides, kernels_size, lstm_units, num_mlp_layers, num_neurons, mlp_activation)
+    hypers = Modular_Hyperparameters(num_conv_layers, num_filters, strides, kernels_size, lstm_units, 
+                                     num_mlp_layers, num_neurons, optimizer_name, weight_decay)
 
 
     opt.dvc = torch.device(opt.dvc) # from str to torch.device
@@ -381,7 +456,7 @@ def objective(trial):
     
     green_duration = 7
     yellow_duration = 6
-    total_episodes = 300
+    total_episodes = 800
 
     agent = PPO_agent(**vars(opt), **vars(hypers))
 
@@ -399,9 +474,11 @@ def objective(trial):
     #introduction_pareto = 400
     dists = ['Weibull']
     #break
+    ema = None
+    bet = 0.95
     while episode < total_episodes:
         print('\n----- Episode', str(episode+1), 'of', str(total_episodes))
-        print(agent.idx, agent.T_horizon)
+        #print(agent.idx, agent.T_horizon)
         for dist in dists:
             current_seed = shuffled_seeds[episode]
             simulation_time = simulation.run(episode, current_seed, dist)  # run the simulation
@@ -415,6 +492,27 @@ def objective(trial):
                 print('Simulation time:', simulation_time, 's - Training time:', training_time, 's - Total:', round(simulation_time+training_time, 1), 's')
                 print('Actor loss: {:.4f}, Critic loss: {:.4f}'.format(actor_loss, critic_loss))
                 print('Entropy: {}'.format(entropy))
+                
+                ep_return = float(simulation.reward_store[-1])
+                ema = ep_return if ema is None else bet*ema + (1.0-bet)*ep_return
+                trial.report(ema, step=episode)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+                
+                wandb.log({
+                    "train/episode": episode,
+                    "train/training_time_sec": training_time,
+                    "train/simulation_time_sec": simulation_time,
+                    "train/ema_reward": float(ema),
+                    "train/actor_loss": float(actor_loss),
+                    "train/critic_loss": float(critic_loss),
+                    "train/entropy": float(entropy),
+                    "train/reward": simulation.reward_store[-1],
+                    "train/avg-speed": simulation.speed_store[-1],
+                    "train/cumulative-wait": simulation.cumulative_wait_store[-1],
+                    "train/avg-queue-length": simulation.avg_queue_length_store[-1]
+                }, step = episode)
+                
             else:
                 print('Simulation time:', simulation_time, 's')
         episode += 1
@@ -426,17 +524,23 @@ def objective(trial):
     
     #visualization = Visualization(path, dpi=96)
     #sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
-    turns = 20
+    turns = 10
     for i, volume in enumerate(demand):
         print('Evaluated car volume: {}cars/hour'.format(volume))
-        score, eval_time = evaluate_policy(opt, agent, turns=turns, volume=volume, seed=10000+ i*turns, traci = traci) # evaluate the policy for 3 times, and get averaged result
+        score, eval_time, sim = evaluate_policy(opt, agent, turns=turns, volume=volume, seed=1000+i*turns, traci = traci, sumo_cmd = sumo_cmd) # evaluate the policy for 3 times, and get averaged result
         rewards_perVolume.append(score)
+        wandb.log({f"eval/score@{volume}": float(score),
+                   f"eval/avg_speed@{volume}": np.mean(sim.speed_store),
+                   f"eval/cumulative_wait@{volume}": np.mean(sim.cumulative_wait_store),
+                   f"eval/avg_queue_length@{volume}": np.mean(sim.avg_queue_length_store)})
         print('Evaluation time:', eval_time, 's', 'Score:', score)
     weighted_avg = np.average(rewards_perVolume, weights=demand)
+    wandb.log({"eval/weighted_avg": float(weighted_avg)})
 
-    return weighted_avg
 
-seeds_study = np.arange(0, 300, 1)
+    return weighted_avg  # tamaño de red o tiempo medio de entrenamiento 
+
+seeds_study = np.arange(0, 800, 1)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -462,7 +566,7 @@ def main():
         load_if_exists=True,
         direction=args.direction,
         sampler=TPESampler(seed=42, multivariate=True, group=True),
-        pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=0, interval_steps=1),
+        pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=400, interval_steps=5),
     )
 
     # Optional: log to stdout a bit less noisily
