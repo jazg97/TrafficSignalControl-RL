@@ -7,8 +7,6 @@ import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
 from torch.distributions import Categorical
 
-
-
 class ModularActor(nn.Module):
     def __init__(self, num_conv_layers, num_filters, strides, kernels_size, num_mlp_layers, lstm_units, num_neurons, action_dim):
         super(ModularActor, self).__init__()
@@ -65,7 +63,8 @@ class ModularActor(nn.Module):
     
     def pi(self, state, hidden, softmax_dim = -1):
         n, lstm_hidden = self.forward(state, hidden)
-        prob = F.softmax(self.mlps[-1](n), dim=softmax_dim)
+        logits = self.mlps[-1](n)#.clamp(-80,80)
+        prob = F.softmax(logits, dim=softmax_dim) #logits
         return prob, lstm_hidden
 
 class ModularCritic(nn.Module):

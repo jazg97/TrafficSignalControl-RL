@@ -15,6 +15,7 @@ import torch.nn as nn
 import torch.autograd as autograd 
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
+import gc
 
 from networks import ModularActor, ModularCritic
 from simulation import Simulation
@@ -26,7 +27,7 @@ import torch
 import optuna
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
-from sklearn.utils import shuffle
+#from sklearn.utils import shuffle
 
 import os
 import datetime
@@ -136,17 +137,18 @@ def discount_cumsum(x, discount):
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
-def evaluate_policy(opt, agent, turns: int, volume: int, seed: int, traci, sumo_cmd):
+def evaluate_policy(opt, agent, turns, volume, seed, traci, sumo_cmd):
     global results
     total_scores = 0
     total_time = 0
     trafficGen = TrafficGenerator(opt.max_e_steps, volume)
     evaluation = Simulation(agent, trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, True, opt.dvc, traci)
-    for j in range(turns):
-        #episode = random.randint(0, 2**31 - 1)
-        simulation_time, reward = evaluation.run(j+1, seed+j)
-        total_scores += reward
-        total_time += simulation_time
+    with torch.no_grad():
+        for j in range(turns):
+            #episode = random.randint(0, 2**31 - 1)
+            simulation_time, reward = evaluation.run(j+1, seed+j)
+            total_scores += reward
+            total_time += simulation_time
     return total_scores/turns, total_time, evaluation
 
 
@@ -231,6 +233,7 @@ class PPO_agent():
             if self.adv_normalization:
                 adv = (adv - adv.mean()) / ((adv.std() + 1e-4))  #sometimes helps
 
+
         """PPO update"""
         #Slice long trajectopy into short trajectory and perform mini-batch PPO update
         optim_iter_num = int(math.ceil(s.shape[0] / self.batch_size))
@@ -263,10 +266,12 @@ class PPO_agent():
                 '''actor update'''
                 prob, _ = self.actor.pi(s_perm[index], (f1[:, index, :], f2[:, index, :]), softmax_dim=-1)
                 prob = prob.view(-1,8)
-                entropy = Categorical(prob).entropy().sum(0, keepdim=True)
+                dist = Categorical(prob)
+                entropy = dist.entropy().sum(0, keepdim=True)
                 
                 prob_a = prob.gather(1, a_perm[index])
-                ratio = torch.exp(torch.log(prob_a) - old_prob_a[index])  # a/b == exp(log(a)-log(b))
+                #new_prob_a = dist.log_prob(a_perm[index].squeeze(1))
+                ratio = torch.exp(torch.log(prob_a + 1e-8) - old_prob_a[index])  # a/b == exp(log(a)-log(b))
 
                 surr1 = ratio * adv_perm[index]
                 surr2 = torch.clamp(ratio, 1 - self.clip_rate, 1 + self.clip_rate) * adv_perm[index]
@@ -282,7 +287,13 @@ class PPO_agent():
                 for name, param in self.critic.named_parameters():
                     if 'weight' in name:
                         c_loss += param.pow(2).sum() * self.l2_reg
-                
+                #c_loss = torch.clamp(c_loss, 500000)
+                #if torch.isnan(c_loss):
+                    #c_loss = torch.tensor(900000, device=self.dvc)
+                #c_loss = torch.nan_to_num(c_loss, nan=9e5)    
+                #else:
+                #c_loss = torch.clamp(c_loss, max= 900000)
+
                 c_loss.backward()
                 self.critic_optimizer.step()
         simulation_time = round(timeit.default_timer() - start_time, 1)
@@ -307,6 +318,20 @@ class PPO_agent():
     def load(self, episode):
         self.critic.load_state_dict(torch.load("./models/ppo_critic{}.pth".format(episode)))
         self.actor.load_state_dict(torch.load("./models/ppo_actor{}.pth".format(episode)))
+    
+    def terminate(self):
+        self.actor.to('cpu')
+        self.critic.to('cpu')
+        for p in self.actor.parameters(): p.grad = None
+        for p in self.critic.parameters(): p.grad = None
+        del self.actor_optimizer
+        del self.critic_optimizer
+        self.actor = None
+        self.critic = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
 class PPOOptions:
     def __init__(self, dvc: str = 'cuda', EnvIndex: int = 0, render: bool = False, seed: int = 209, T_horizon: int = 2048,
@@ -327,6 +352,7 @@ class PPOOptions:
         self.K_epochs = K_epochs
         self.net_width = net_width
         self.lr = lr
+        self.l2_reg = l2_reg
         self.l2_reg = l2_reg
         self.batch_size = batch_size
         self.entropy_coef = entropy_coef
@@ -355,17 +381,19 @@ yellow_duration = 6
 def objective(trial):
     seed = trial.number
     # Seeds in trial for episodes
-    shuffled_seeds = shuffle(seeds_study, random_state = seed)
+    #shuffled_seeds = shuffle(seeds_study, random_state = seed)
+    rng = np.random.RandomState(seed)
+    rng.shuffle(seeds_study)
 
     # Convolution hyperparameters
     num_conv_layers = trial.suggest_int("num_conv_layers", 1, 2)
-    num_filters = [trial.suggest_categorical("num_filter_"+str(i), [16,32,64,128])
+    num_filters = [trial.suggest_categorical("num_filter_"+str(i), [16, 32, 64, 128])
                    for i in range(num_conv_layers)]
     strides = [trial.suggest_int("stride_size_"+str(i), 1, 3, 1) for i in range(num_conv_layers)]
     kernels_size= [trial.suggest_int("kernel_size_"+str(i), 3, 9, 2) for i in range(num_conv_layers)]
 
     #LSTM units
-    lstm_units = trial.suggest_categorical("lstm_units", [16, 32, 64, 128, 256])
+    lstm_units = trial.suggest_categorical("lstm_units", [16, 32, 64, 96, 128])
 
     # Fully-connected hyperparameters
     num_mlp_layers = trial.suggest_int("num_mlp_layers", 2, 3)
@@ -379,7 +407,7 @@ def objective(trial):
     
     gamma = trial.suggest_float("gamma", 0.98, 0.997, step = 0.001)
     lambd = trial.suggest_float("lambd", 0.92, 0.98, step = 0.01)
-    clip_range = trial.suggest_float("clip_range", 0.1, 0.25, step = 0.01)
+    clip_range = trial.suggest_float("clip_range", 0.16, 0.25, step = 0.01)
     
     entropy_coef = trial.suggest_float("entropy_coef", 1e-3, 2e-2, log=True)
         
@@ -410,9 +438,8 @@ def objective(trial):
     #Initiate logging for wandb
     
     run = wandb.init(
-            entity = 'jzapanag',
-            project = 'SignalTrafficControl',
-            name= f"trial-{trial.number}-v1",
+            project = 'TrafficSignalControl',
+            name= f"trial-{trial.number}-v5",
             reinit = True,
             mode = os.environ.get("WANDB_MODE", "online"),
             config={
@@ -480,7 +507,7 @@ def objective(trial):
         print('\n----- Episode', str(episode+1), 'of', str(total_episodes))
         #print(agent.idx, agent.T_horizon)
         for dist in dists:
-            current_seed = shuffled_seeds[episode]
+            current_seed = seeds_study[episode]
             simulation_time = simulation.run(episode, current_seed, dist)  # run the simulation
             if (agent.idx) % opt.T_horizon == 0:
                 training_time, actor_loss, critic_loss, entropy = agent.train()
@@ -492,7 +519,14 @@ def objective(trial):
                 print('Simulation time:', simulation_time, 's - Training time:', training_time, 's - Total:', round(simulation_time+training_time, 1), 's')
                 print('Actor loss: {:.4f}, Critic loss: {:.4f}'.format(actor_loss, critic_loss))
                 print('Entropy: {}'.format(entropy))
-                
+               
+                #if episode+1 > 399 and (episode+1)% 25 == 0:
+                #    score, _, _ = evaluate_policy(opt, agent, turns=8, volume=1000, seed = 1000, traci=traci, sumo_cmd=sumo_cmd)
+                #    trial.report(score, step=episode)
+                #    if trial.should_prune():
+
+                #        raise optuna.TrialPruned()
+                #    wandb.log({'train/pruning_eval': float(score)})
                 ep_return = float(simulation.reward_store[-1])
                 ema = ep_return if ema is None else bet*ema + (1.0-bet)*ep_return
                 trial.report(ema, step=episode)
@@ -536,6 +570,16 @@ def objective(trial):
         print('Evaluation time:', eval_time, 's', 'Score:', score)
     weighted_avg = np.average(rewards_perVolume, weights=demand)
     wandb.log({"eval/weighted_avg": float(weighted_avg)})
+    del visualization
+    del evaluation
+    agent.terminate()
+    del agent
+    del simulation
+    del trafficGen
+    gc.collect()
+    if torch.cuda.is_available:
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
 
 
     return weighted_avg  # tamaño de red o tiempo medio de entrenamiento 
@@ -559,7 +603,7 @@ def main():
     # Repro (as much as possible with RL)
     #set_global_seeds(args.seed)
     #global seeds_study = np.arange(0, 800, 1)
-    # Create (or load) the study. TPE + MedianPruner work well for long RL trials.
+    # Create (or load) the study. TPE + Med::::ianPruner work well for long RL trials.
     study = optuna.create_study(
         study_name=args.study_name,
         storage=args.storage,
@@ -568,6 +612,10 @@ def main():
         sampler=TPESampler(seed=42, multivariate=True, group=True),
         pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=400, interval_steps=5),
     )
+
+    to_retry = [t for t in study.trials if t.value is None]
+    for t in to_retry:
+            study.enqueue_trial(t.params)
 
     # Optional: log to stdout a bit less noisily
     optuna.logging.set_verbosity(optuna.logging.INFO)
@@ -580,8 +628,8 @@ def main():
         timeout=args.timeout,
         n_jobs=args.n_jobs,   # >=2 only if your environment allows multi-proc SUMO safely
         gc_after_trial=True,
-        show_progress_bar=True
-    )
+        show_progress_bar=True,
+        )
     elapsed = time.time() - start
     print(f"\nFinished: best value={study.best_value:.6f}")
     print(f"Best trial #{study.best_trial.number} params:\n{json.dumps(study.best_trial.params, indent=2)}")

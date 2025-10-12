@@ -157,7 +157,7 @@ class Simulation:
         last_queue = 0
         self._simulate(50)  ## Warm Environment
         h_out = (torch.zeros([1, 1, self.lstm_units], dtype=torch.float).to(self.dvc), torch.zeros([1, 1, self.lstm_units], dtype=torch.float).to(self.dvc))
-
+        old_queue = self._get_queue_length()
         while self._step < self._max_steps:
             
             # get current state of the intersection
@@ -186,9 +186,10 @@ class Simulation:
             current_phase = int(self.traci.trafficlight.getPhase("TL")/2)
             # Chosen action
             h_in = h_out
-            action, logprob_a, h_out = self._choose_action(current_state[None, ...], h_in, self._eval)            
+            action, h_out, logprob_a = self._choose_action(current_state[None, ...], h_in, self._eval)            
+            h_out = (h_out[0].detach(), h_out[1].detach())
             last_queue = self._get_queue_length()
-
+            
             # saving the data into the memory                
             # if the chosen phase is different from the last phase, activate the yellow phase
             if self._step != 0 and old_action != action:# and i == 0:
@@ -204,8 +205,9 @@ class Simulation:
                 # Perform chosen action on environment
                 self._set_green_phase(action)
                 self._simulate(7)
+            new_queue = self._get_queue_length()
             # Capture next state information
-            reward = -self._get_queue_length() #+ last_queue
+            reward = (last_queue - new_queue) - 0.1*new_queue #max(-200, -self._get_queue_length()) #+ last_queue
             if self._step != 0:
                 next_state = _get_state(self.traci)
                 if self._step < self._max_steps - self._green_duration - self._yellow_duration:
@@ -216,7 +218,7 @@ class Simulation:
                     cat_hin = torch.cat((h_in[0], h_in[1]), dim=1).cpu()
                     cat_hout = torch.cat((h_out[0], h_out[1]), dim=1).cpu()
                     self._Agent.put_data(current_state, action, reward, next_state, logprob_a, cat_hin.numpy(), cat_hout.numpy(), done, done)            
-            # saving only the meaningful reward to better see if the agent is behaving correctly
+            # saving only the meaningful reward to better see if the agent is behaving correctly:wq
             #if reward < 0:
             self._sum_neg_reward += reward
             re += 1
@@ -289,7 +291,7 @@ class Simulation:
                 m = Categorical(pi)
                 action = m.sample()
                 action_logprob = m.log_prob(action)
-                return action.item(), action_logprob.item(), h_out
+                return action.item(), h_out, action_logprob.item()#, h_out
 
     def _set_yellow_phase(self, old_action):
         """

@@ -11,7 +11,7 @@ class TrafficGenerator:
         Generation of the route of every car for one episode
         """
         #np.random.seed(seed)  # make tests reproducible
-        rng = np.random.default_rng(seed)
+        rng = np.random.RandomState(seed)
         # the generation of cars is distributed according to a weibull distribution
         if distribution=='Weibull':
             timings = rng.weibull(2, self._n_cars_generated)
