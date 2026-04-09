@@ -1,3 +1,5 @@
+"""Project utility helpers for config loading and SUMO/model path setup."""
+
 import configparser
 from sumolib import checkBinary
 import os
@@ -6,7 +8,7 @@ import sys
 
 def import_train_configuration(config_file):
     """
-    Read the config file regarding the training and import its content
+    Read the minimal training configuration used by the training scripts.
     """
     content = configparser.ConfigParser()
     content.read(config_file)
@@ -17,7 +19,10 @@ def import_train_configuration(config_file):
 
 def set_sumo(gui, sumocfg_file_name, max_steps):
     """
-    Configure various parameters of SUMO
+    Build the SUMO command and return the TraCI-compatible interface.
+
+    The helper prefers ``libsumo`` in headless mode because it is faster than
+    socket-based TraCI, but falls back automatically when it is unavailable.
     """
     # sumo things - we need to import python modules from the $SUMO_HOME/tools directory
     if 'SUMO_HOME' in os.environ:
@@ -60,7 +65,7 @@ def set_sumo(gui, sumocfg_file_name, max_steps):
 
 def set_train_path(models_path_name):
     """
-    Create a new model path with an incremental integer, also considering previously created model paths
+    Create a new incremental model directory inside ``models_path_name``.
     """
     models_path = os.path.join(os.getcwd(), models_path_name, '')
     os.makedirs(os.path.dirname(models_path), exist_ok=True)
@@ -76,12 +81,13 @@ def set_train_path(models_path_name):
     os.makedirs(os.path.dirname(data_path), exist_ok=True)
     return data_path
 def get_model_path(models_path_name, model_n):
+    """Return the absolute path to an existing model folder by numeric id."""
     model_folder_path = os.path.join(os.getcwd(), models_path_name, 'model_'+str(model_n), '')
     return model_folder_path
 
 def set_test_path(models_path_name, model_n):
     """
-    Returns a model path that identifies the model number provided as argument and a newly created 'test' path
+    Return the target model directory and create its ``test`` subfolder.
     """
     model_folder_path = os.path.join(os.getcwd(), models_path_name, 'model_'+str(model_n), '')
 

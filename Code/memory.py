@@ -1,9 +1,17 @@
 #### Code modified from https://github.com/abderraouf2che/RL-Traffic-Signal-Control/blob/main/Memory.py  #####
+"""Prioritized replay memory utilities used by the DQN experiments.
+
+The PPO pipeline in this repository stores trajectories directly inside the
+agent, but the Rainbow DQN experiments use this SumTree-backed replay buffer.
+Keeping that distinction explicit helps a new student understand why both
+memory styles exist in the project.
+"""
 
 import random
 import numpy as np
 
 class Memory:  # stored as ( s, a, r, s_ ) in SumTree
+    """Prioritized replay wrapper around ``SumTree``."""
     e = 0.01
     a = 0.6
     beta = 0.4
@@ -15,6 +23,7 @@ class Memory:  # stored as ( s, a, r, s_ ) in SumTree
         self._size_min = size_min
 
     def _get_priority(self, error):
+        """Convert a TD error into a strictly positive sampling priority."""
         return (np.abs(error) + self.e) ** self.a
 
     def add_sample(self, error, sample):
@@ -22,6 +31,7 @@ class Memory:  # stored as ( s, a, r, s_ ) in SumTree
         self.tree.add(p, sample)
 
     def get_samples(self, n):
+        """Sample ``n`` transitions together with tree indices and IS weights."""
         # if self._size_now() < self._size_min:
         #     return []
 
@@ -65,6 +75,7 @@ class Memory:  # stored as ( s, a, r, s_ ) in SumTree
 # SumTree
 # a binary tree data structure where the parent’s value is the sum of its children
 class SumTree:
+    """Binary tree that supports efficient weighted sampling and updates."""
     write = 0
 
     def __init__(self, capacity):
@@ -96,6 +107,7 @@ class SumTree:
             return self._retrieve(right, s - self.tree[left])
 
     def total(self):
+        """Return the sum of all current priorities."""
         return self.tree[0]
 
     # store priority and sample

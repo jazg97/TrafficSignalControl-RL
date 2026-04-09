@@ -1,14 +1,27 @@
+"""Traffic demand generation for a single SUMO episode.
+
+Each call rewrites ``intersection/episode_routes.rou.xml`` with a new set of
+ vehicle departures. The distribution controls only the arrival timing profile;
+ route choice is still sampled independently between straight and turning
+ movements.
+"""
+
 import numpy as np
 import math
 
 class TrafficGenerator:
     def __init__(self, max_steps, n_cars_generated):
+        """Store episode horizon and target number of vehicles to spawn."""
         self._n_cars_generated = n_cars_generated  # how many cars per episode
         self._max_steps = max_steps
 
     def generate_routefile(self, seed, distribution='Weibull'):
         """
-        Generation of the route of every car for one episode
+        Generate the SUMO route file for one episode.
+
+        A fixed ``seed`` makes the demand profile reproducible. The selected
+        distribution is stretched to fit the simulation horizon
+        ``[0, self._max_steps]`` and then rounded to integer departure steps.
         """
         #np.random.seed(seed)  # make tests reproducible
         rng = np.random.RandomState(seed)
@@ -22,7 +35,7 @@ class TrafficGenerator:
         
         timings = np.sort(timings)
 
-        # reshape the distribution to fit the interval 0:max_steps
+        # Rescale the sampled arrival times to the valid SUMO simulation window.
         car_gen_steps = []
         min_old = math.floor(timings[1])
         max_old = math.ceil(timings[-1])
@@ -33,7 +46,7 @@ class TrafficGenerator:
 
         car_gen_steps = np.rint(car_gen_steps)  # round every value to int -> effective steps when a car will be generated
 
-        # produce the file for cars generation, one car per line
+        # Write one vehicle declaration per generated departure time.
         with open("intersection/episode_routes.rou.xml", "w") as routes:
             print("""<routes>
             <vType accel="1.0" decel="4.5" id="standard_car" length="5.0" minGap="2.5" maxSpeed="25" sigma="0.5" />

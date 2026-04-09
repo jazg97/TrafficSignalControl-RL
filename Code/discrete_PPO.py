@@ -1,3 +1,5 @@
+"""Simpler feed-forward PPO baseline kept for earlier non-recurrent tests."""
+
 from torch.distributions import Categorical
 from utils import Actor, Critic
 import numpy as np
@@ -38,6 +40,7 @@ class Critic(nn.Module):
         return v
 
 def evaluate_policy(env, agent, turns = 3):
+    """Average deterministic policy returns across several episodes."""
     total_scores = 0
     for j in range(turns):
         s, info = env.reset()
@@ -54,6 +57,7 @@ def evaluate_policy(env, agent, turns = 3):
 
 class PPO_discrete():
     def __init__(self, **kwargs):
+        """Vanilla PPO implementation for discrete actions without recurrence."""
         # Init hyperparameters for PPO agent, just like "self.gamma = opt.gamma, self.lambd = opt.lambd, ..."
         self.__dict__.update(kwargs)
 
@@ -174,4 +178,3 @@ class PPO_discrete():
     def load(self, episode):
         self.critic.load_state_dict(torch.load("./model/ppo_critic{}.pth".format(episode)))
         self.actor.load_state_dict(torch.load("./model/ppo_actor{}.pth".format(episode)))
-

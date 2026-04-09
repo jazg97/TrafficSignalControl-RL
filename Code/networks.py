@@ -1,3 +1,18 @@
+"""Neural network building blocks used by the PPO traffic-signal agent.
+
+This file contains the modular CNN+LSTM actor and critic used in the main
+training script. The models consume a cropped 3-channel occupancy tensor of the
+intersection with shape ``[3, 48, 46]``:
+
+- channel 0: vehicle presence
+- channel 1: normalized speed
+- channel 2: normalized accumulated waiting time
+
+The convolutional stack extracts spatial features, the LSTM keeps short-term
+traffic history, and the MLP heads produce either action logits or a scalar
+state-value estimate.
+"""
+
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
@@ -9,6 +24,12 @@ from torch.distributions import Categorical
 
 class ModularActor(nn.Module):
     def __init__(self, num_conv_layers, num_filters, strides, kernels_size, num_mlp_layers, lstm_units, num_neurons, action_dim):
+        """Policy network for the discrete traffic-light action space.
+
+        The architecture is intentionally parameterized so Optuna can search
+        over spatial capacity, recurrent memory size, and MLP width while the
+        input/output contract stays fixed.
+        """
         super(ModularActor, self).__init__()
         input_size = np.array((48, 46))
         
@@ -53,6 +74,7 @@ class ModularActor(nn.Module):
         return ((input_size + 2*padding - dilation*(kernel_size - 1) - 1) // stride) + 1
     
     def forward(self, x, prev_hidden):
+        """Return latent features and the next LSTM hidden state."""
         for operation in self.conv_layers:
             x = operation(x)
         x = x.view(-1, 1, self.out_features)
@@ -62,6 +84,7 @@ class ModularActor(nn.Module):
         return x, lstm_hidden
     
     def pi(self, state, hidden, softmax_dim = -1):
+        """Return action probabilities for one observation and hidden state."""
         n, lstm_hidden = self.forward(state, hidden)
         logits = self.mlps[-1](n)#.clamp(-80,80)
         prob = F.softmax(logits, dim=softmax_dim) #logits
@@ -69,6 +92,11 @@ class ModularActor(nn.Module):
 
 class ModularCritic(nn.Module):
     def __init__(self, num_conv_layers, num_filters, strides, kernels_size, num_mlp_layers, lstm_units, num_neurons):
+        """Value network mirroring the actor backbone but ending in one scalar.
+
+        Keeping actor and critic backbones structurally similar reduces one
+        source of experimental variation when comparing hyperparameter trials.
+        """
         super(ModularCritic, self).__init__()
         input_size = np.array((48, 46))
         
@@ -114,6 +142,7 @@ class ModularCritic(nn.Module):
         return ((input_size + 2*padding - dilation*(kernel_size - 1) - 1) // stride) + 1
     
     def forward(self, x, prev_hidden):
+        """Estimate the state value for one observation and hidden state."""
         for operation in self.conv_layers:
             x = operation(x)
         x = x.view(-1, 1, self.out_features)

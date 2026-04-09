@@ -1,3 +1,16 @@
+"""SUMO interaction loop for training and evaluating traffic-signal agents.
+
+The central responsibility of this module is to translate between:
+
+- SUMO state: vehicle positions, waiting times, and current signal phase
+- RL state: a 3 x 48 x 46 tensor centered on the intersection
+- RL action: one of eight admissible green phases
+- logged metrics: reward, queue length, cumulative wait, and average speed
+
+The class is intentionally agnostic to the training algorithm beyond expecting
+an agent object that exposes ``actor``, ``critic``, and ``put_data`` methods.
+"""
+
 import torch
 import traci
 from traci import constants as tc
@@ -62,7 +75,12 @@ LANE_MAP = {
 
 def _get_state(traci):
     """
-    Retrieve the state of the intersection from sumo, in the form of cell occupancy
+    Encode the current intersection into a cropped 3-channel grid.
+
+    The full map is first assembled on a fixed 209 x 206 canvas so that each
+    lane always lands on the same coordinates. The function then returns the
+    48 x 46 crop centered on the junction, which is what the neural networks
+    consume.
     """
     state = np.zeros((3, 209, 206))   ## kind of like an RGB image
     lane = ["N2TL_0","N2TL_1","N2TL_2","E2TL_0","E2TL_1","E2TL_2","E2TL_3","S2TL_0","S2TL_1","S2TL_2","W2TL_0","W2TL_1","W2TL_2","W2TL_3"]
@@ -93,6 +111,12 @@ def _get_state(traci):
 
 class Simulation:
     def __init__(self, Agent, TrafficGen, sumo_cmd, max_steps, green_duration, yellow_duration, num_states, num_actions, mode, device, traci):
+        """Wrap one SUMO environment instance plus metric tracking buffers.
+
+        The same class is used for both training and evaluation so reward
+        calculation, state extraction, and traffic-light timing remain
+        consistent across rollout collection and final scoring.
+        """
         self._Agent = Agent
         self._Actor = Agent.actor
         self._Critic= Agent.critic
@@ -115,7 +139,10 @@ class Simulation:
 
     def run(self, episode: int, seed: int, distribution: str ='Weibull'):
         """
-        Runs an episode of simulation, then starts a training session
+        Run one SUMO episode and optionally push transitions into the agent.
+
+        ``mode=False`` means training data will be collected. ``mode=True``
+        keeps the environment deterministic for policy evaluation.
         """
         self.training = False
         start_time = timeit.default_timer()
@@ -155,7 +182,7 @@ class Simulation:
         done = 0
         old_action = 0
         last_queue = 0
-        self._simulate(50)  ## Warm Environment
+        self._simulate(50)  ## Warm up the network before the first decision.
         h_out = (torch.zeros([1, 1, self.lstm_units], dtype=torch.float).to(self.dvc), torch.zeros([1, 1, self.lstm_units], dtype=torch.float).to(self.dvc))
         old_queue = self._get_queue_length()
         while self._step < self._max_steps:
@@ -190,8 +217,7 @@ class Simulation:
             h_out = (h_out[0].detach(), h_out[1].detach())
             last_queue = self._get_queue_length()
             
-            # saving the data into the memory                
-            # if the chosen phase is different from the last phase, activate the yellow phase
+            # Enforce a yellow transition only when the chosen action changes.
             if self._step != 0 and old_action != action:# and i == 0:
                 self._set_yellow_phase(current_phase)
                 self._simulate(self._yellow_duration)
@@ -206,8 +232,8 @@ class Simulation:
                 self._set_green_phase(action)
                 self._simulate(7)
             new_queue = self._get_queue_length()
-            # Capture next state information
-            reward = (last_queue - new_queue) - 0.1*new_queue #max(-200, -self._get_queue_length()) #+ last_queue
+            # Compute the shaped reward after the effect of the chosen phase.
+            reward = (last_queue - new_queue) - 0.2*new_queue #max(-200, -self._get_queue_length()) #+ last_queue
             if self._step != 0:
                 next_state = _get_state(self.traci)
                 if self._step < self._max_steps - self._green_duration - self._yellow_duration:
@@ -215,6 +241,8 @@ class Simulation:
                 else:
                     done = 1
                 if not self._eval and self._Agent.idx < self._Agent.T_horizon:
+                    # The PPO implementation stores LSTM hidden and cell states
+                    # as a compact 2 x hidden_units tensor per transition.
                     cat_hin = torch.cat((h_in[0], h_in[1]), dim=1).cpu()
                     cat_hout = torch.cat((h_out[0], h_out[1]), dim=1).cpu()
                     self._Agent.put_data(current_state, action, reward, next_state, logprob_a, cat_hin.numpy(), cat_hout.numpy(), done, done)            
@@ -279,6 +307,7 @@ class Simulation:
         return total_waiting_time 
 
     def _choose_action(self, state, h_in, deterministic):
+        """Query the actor network and keep the recurrent state in sync."""
         state = torch.from_numpy(state).float().to(self.dvc)
         #print(state.shape)
         with torch.no_grad():
@@ -324,6 +353,11 @@ class Simulation:
         # Add New phases (North Straight and Left, South Straight and Left, West Straight and Left, East Straight and Left)
 
     def _get_green(self,current_phase):       ## For Finetuning Method 
+        """Map a phase index to a hand-tuned green duration.
+
+        This helper belongs to an older fine-tuning workflow and is currently
+        unused by the main PPO loop.
+        """
         if current_phase == 0:
             green = Duration_NS
         elif current_phase == 1:
@@ -349,6 +383,7 @@ class Simulation:
         return queue_length
     
     def _get_speed(self):                  # For evaluation 
+        """Return the average instantaneous speed of all vehicles in SUMO."""
         total_speed = 0
         car_list = self.traci.vehicle.getIDList()
         for car_id in car_list:
@@ -362,7 +397,7 @@ class Simulation:
             
     def _save_episode_stats(self):
         """
-        Save the stats of the episode to plot the graphs at the end of the session
+        Save episode-level metrics in memory for later plotting/export.
         """
         self._reward_store.append(self.reward)  # how much negative reward in this episode
         self._speed_store.append(self._sum_speed / self._max_steps)
@@ -384,3 +419,4 @@ class Simulation:
     @property
     def avg_queue_length_store(self):
         return self._avg_queue_length_store
+#python SignalTrafficOptimization.py --study-name RL-ppo-search --storage sqlite:///RL_signal.db --n-trials 80

@@ -1,3 +1,20 @@
+"""Main PPO + Optuna training entry point for the SUMO traffic-signal project.
+
+This script glues together the main components of the repository:
+
+- ``generator.py`` creates one traffic demand profile per episode
+- ``simulation.py`` executes SUMO and collects transitions/metrics
+- ``networks.py`` defines the CNN+LSTM actor/critic
+- this file defines the PPO update logic and Optuna search procedure
+
+The training objective is the weighted average evaluation reward across
+multiple traffic volumes after completing a full training run.
+
+This file is the maintained script-based experiment path for PPO. Notebook
+variants may still exist in the repository, but architectural search and
+reproducible study runs should be driven from this module.
+"""
+
 import numpy as np
 import torch
 import copy
@@ -27,6 +44,7 @@ import torch
 import optuna
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
+from optuna.exceptions import TrialPruned
 #from sklearn.utils import shuffle
 
 import os
@@ -70,7 +88,9 @@ PHASE_W_SL_YELLOW= 15
 
 def _get_state():
     """
-    Retrieve the state of the intersection from sumo, in the form of cell occupancy
+    Legacy state encoder kept here for earlier experiments.
+
+    The active training loop currently uses ``simulation._get_state`` instead.
     """
     state = np.zeros((3, 209, 206))   ## kind of like an RGB image
     lane = ["N2TL_0","N2TL_1","N2TL_2","E2TL_0","E2TL_1","E2TL_2","E2TL_3","S2TL_0","S2TL_1","S2TL_2","W2TL_0","W2TL_1","W2TL_2","W2TL_3"]
@@ -117,6 +137,7 @@ def _get_state():
     return state[:, state.shape[1]//2 - 24: state.shape[1]//2 + 24, state.shape[2]//2 - 23: state.shape[2]//2 + 23]
 
 def weight_init(m):
+    """Orthogonal initialization for convolutional and linear layers."""
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
         nn.init.orthogonal_(m.weight)
 
@@ -138,6 +159,11 @@ def discount_cumsum(x, discount):
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 def evaluate_policy(opt, agent, turns, volume, seed, traci, sumo_cmd):
+    """Run several deterministic evaluation episodes for one traffic volume.
+
+    The evaluation seed is shifted by episode index so each turn uses a
+    reproducible but distinct traffic realization.
+    """
     global results
     total_scores = 0
     total_time = 0
@@ -155,6 +181,7 @@ def evaluate_policy(opt, agent, turns, volume, seed, traci, sumo_cmd):
 # Need to update to SUMO environment
 class PPO_agent():
     def __init__(self, **kwargs):
+        """CNN+LSTM PPO agent specialized for the 8-phase SUMO controller."""
         # Init hyperparameters for PPO agent, just like "self.gamma = opt.gamma, self.lambd = opt.lambd, ..."
         self.__dict__.update(kwargs)
 
@@ -192,6 +219,13 @@ class PPO_agent():
         self.entropies = []
 
     def train(self):
+        """Run one PPO optimization pass over the currently filled horizon.
+
+        ``self.logprob_a_hoder`` stores action log-probabilities from the policy
+        that generated the rollout. Those reference values must stay fixed for
+        all PPO epochs, so this method keeps an immutable base tensor and builds
+        per-epoch shuffled views from it.
+        """
         start_time = timeit.default_timer()
         self.entropy_coef *= self.entropy_coef_decay #exploring decay
         '''Prepare PyTorch data from Numpy data'''
@@ -199,7 +233,7 @@ class PPO_agent():
         a = torch.from_numpy(self.a_hoder).to(self.dvc)
         r = torch.from_numpy(self.r_hoder).to(self.dvc)
         s_next = torch.from_numpy(self.s_next_hoder).to(self.dvc)
-        old_prob_a = torch.from_numpy(self.logprob_a_hoder).to(self.dvc)
+        old_prob_a_all = torch.from_numpy(self.logprob_a_hoder).to(self.dvc)
         
         h1_in, h2_in = torch.from_numpy(self.hin_hoder[:, 0, :]), torch.from_numpy(self.hin_hoder[:, 1, :])
         first_hidden = (h1_in.unsqueeze(0).to(self.dvc), h2_in.unsqueeze(0).to(self.dvc))
@@ -249,12 +283,14 @@ class PPO_agent():
                 s[perm].clone(), a[perm].clone(), td_target[perm].clone(), adv[perm].clone(), old_prob_a[perm].clone(), first_hidden[0][:, perm, :].clone(), first_hidden[1][:, perm, :].clone()'''
 
 
+            # Shuffle transitions but preserve the hidden state paired to each
+            # sampled observation so the recurrent actor/critic stay coherent.
             perm = torch.randperm(B, device = self.dvc)
             s_perm = s.index_select(0, perm)
             a_perm = a.index_select(0, perm)
             adv_perm = adv.index_select(0, perm)
             td_perm = td_target.index_select(0, perm)
-            old_prob_a = old_prob_a.index_select(0, perm)
+            old_prob_a_perm = old_prob_a_all.index_select(0, perm)
             
             f1 = first_hidden[0].index_select(1, perm)
             f2 = first_hidden[1].index_select(1, perm)
@@ -271,7 +307,7 @@ class PPO_agent():
                 
                 prob_a = prob.gather(1, a_perm[index])
                 #new_prob_a = dist.log_prob(a_perm[index].squeeze(1))
-                ratio = torch.exp(torch.log(prob_a + 1e-8) - old_prob_a[index])  # a/b == exp(log(a)-log(b))
+                ratio = torch.exp(torch.log(prob_a) - old_prob_a_perm[index])  # a/b == exp(log(a)-log(b))
 
                 surr1 = ratio * adv_perm[index]
                 surr2 = torch.clamp(ratio, 1 - self.clip_rate, 1 + self.clip_rate) * adv_perm[index]
@@ -300,6 +336,7 @@ class PPO_agent():
         return simulation_time, a_loss.mean(), c_loss, entropy.mean()
 
     def put_data(self, s, a, r, s_next, logprob_a, h_in, h_out, done, dw):
+        """Append one transition to the fixed-length PPO rollout buffer."""
         self.s_hoder[self.idx] = s
         self.a_hoder[self.idx] = a
         self.r_hoder[self.idx] = r
@@ -320,6 +357,7 @@ class PPO_agent():
         self.actor.load_state_dict(torch.load("./models/ppo_actor{}.pth".format(episode)))
     
     def terminate(self):
+        """Release model/optimizer references to make long Optuna runs safer."""
         self.actor.to('cpu')
         self.critic.to('cpu')
         for p in self.actor.parameters(): p.grad = None
@@ -338,6 +376,11 @@ class PPOOptions:
                  Max_train_steps: int = 5e7, eval_interval: int = 5e3, gamma: float = 0.99, lambd: float = 0.95, clip_rate: float = 0.2,
                  K_epochs: int = 10, net_width: int = 64, lr: float = 1e-4, l2_reg: float = 0, batch_size: int = 64, entropy_coef: float = 0,
                  entropy_coef_decay: float = 0.99, adv_normalization: bool = False):
+        """Container for PPO training hyperparameters.
+
+        The object is intentionally lightweight and serializable so trial
+        configurations can be logged directly to Optuna and W&B.
+        """
 
         self.dvc = dvc
         self.EnvIdex = EnvIndex
@@ -363,6 +406,7 @@ class Modular_Hyperparameters:
     def __init__(self, num_conv_layers: int, num_filters: list, strides: list, 
                  kernels_size: list, lstm_units: int, num_mlp_layers: int, 
                  mlp_neurons: list, optimizer: str, weight_decay: float):
+        """Container for network-search hyperparameters proposed by Optuna."""
 
         self.num_conv_layers = num_conv_layers
         self.num_filters = num_filters
@@ -379,214 +423,246 @@ green_duration = 7
 yellow_duration = 6
 
 def objective(trial):
+    """Train one PPO configuration and return its weighted evaluation score."""
     seed = trial.number
     # Seeds in trial for episodes
     #shuffled_seeds = shuffle(seeds_study, random_state = seed)
-    rng = np.random.RandomState(seed)
-    rng.shuffle(seeds_study)
+    #rng = np.random.RandomState(seed)
+    #rng.shuffle(seeds_study)
 
     # Convolution hyperparameters
-    num_conv_layers = trial.suggest_int("num_conv_layers", 1, 2)
-    num_filters = [trial.suggest_categorical("num_filter_"+str(i), [16, 32, 64, 128])
-                   for i in range(num_conv_layers)]
-    strides = [trial.suggest_int("stride_size_"+str(i), 1, 3, 1) for i in range(num_conv_layers)]
-    kernels_size= [trial.suggest_int("kernel_size_"+str(i), 3, 9, 2) for i in range(num_conv_layers)]
+    try:
+        num_conv_layers = trial.suggest_int("num_conv_layers", 1, 2)
+        num_filters = [trial.suggest_categorical("num_filter_"+str(i), [16, 32, 64, 128, 256])
+                       for i in range(num_conv_layers)]
+        strides = [trial.suggest_int("stride_size_"+str(i), 1, 3, 1) for i in range(num_conv_layers)]
+        kernels_size= [trial.suggest_int("kernel_size_"+str(i), 3, 9, 2) for i in range(num_conv_layers)]
 
-    #LSTM units
-    lstm_units = trial.suggest_categorical("lstm_units", [16, 32, 64, 96, 128])
+        #LSTM units
+        lstm_units = trial.suggest_categorical("lstm_units", [16, 32, 64, 96, 128, 256])
 
-    # Fully-connected hyperparameters
-    num_mlp_layers = trial.suggest_int("num_mlp_layers", 2, 3)
-    num_neurons = [trial.suggest_categorical("mlp_neurons_"+str(i), [32, 64, 128]) for i in range(num_mlp_layers-1)]
-    #mlp_activation = trial.suggest_categorical("mlp_activation", ["relu", "tanh", "elu", "leaky_relu"])
+        # Fully-connected hyperparameters
+        num_mlp_layers = trial.suggest_int("num_mlp_layers", 2, 3)
+        num_neurons = [trial.suggest_categorical("mlp_neurons_"+str(i), [32, 64, 128]) for i in range(num_mlp_layers-1)]
+        #mlp_activation = trial.suggest_categorical("mlp_activation", ["relu", "tanh", "elu", "leaky_relu"])
 
-    #Training hyperparameters
-    learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    
-    # PPO search space
-    
-    gamma = trial.suggest_float("gamma", 0.98, 0.997, step = 0.001)
-    lambd = trial.suggest_float("lambd", 0.92, 0.98, step = 0.01)
-    clip_range = trial.suggest_float("clip_range", 0.16, 0.25, step = 0.01)
-    
-    entropy_coef = trial.suggest_float("entropy_coef", 1e-3, 2e-2, log=True)
+        #Training hyperparameters
+        learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+        k_epochs = trial.suggest_int("K_epochs", 5, 15)
+        l2_param = trial.suggest_float("L2-reg", 1e-12, 1e-3, log=True)
         
-    optimizer_name = trial.suggest_categorical("optimizer", ["adam", "adamw"])
-    weight_decay = 0.0
-    if optimizer_name == 'adamw':
-        weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-4, log=True)
+        # PPO search space
         
-    
-    run_config = dict(
-        state_dim = [3, 48, 46],
-        action_dim = 8,
-        max_e_steps = 3600,
-        green_duration = 6,
-        yellow_duration = 7,
-        total_episodes = 800,
-        eval_turns = 10,
-        eval_demand = list(range(1000, 2100, 100)),
-        T_horizon = 256,
-        K_epochs = 10,
-        batch_size = 16,
-        adv_normalization = True,
-        l2_reg = 0.1,
-        traffic_n_cars = 1000,
-        dists = ['Weibull'],
-    )
-    
-    #Initiate logging for wandb
-    
-    run = wandb.init(
-            project = 'TrafficSignalControl',
-            name= f"trial-{trial.number}-v5",
-            reinit = True,
-            mode = os.environ.get("WANDB_MODE", "online"),
-            config={
-            "search_space": {
-                "num_conv_layers": num_conv_layers,
-                "num_filters": num_filters,
-                "strides": strides,
-                "kernels_size": kernels_size,
-                "lstm_units": lstm_units,
-                "num_mlp_layers": num_mlp_layers,
-                "num_neurons": num_neurons,
-                "learning_rate": learning_rate,
-                "optimizer": optimizer_name,
-                "weight_decay": weight_decay,
-                "gamma": gamma,
-                "lambd": lambd,
-                "clip_rate": clip_range,
-                "entropy_coef": entropy_coef,                
+        gamma = trial.suggest_float("gamma", 0.98, 0.997, step = 0.001)
+        lambd = trial.suggest_float("lambd", 0.92, 0.98, step = 0.01)
+        clip_range = trial.suggest_float("clip_range", 0.12, 0.25, step = 0.01)
+        
+        entropy_coef = trial.suggest_float("entropy_coef", 1e-3, 2e-2, log=True)
+            
+        optimizer_name = trial.suggest_categorical("optimizer", ["adam", "adamw"])
+        weight_decay = 0.0
+        if optimizer_name == 'adamw':
+            weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-4, log=True)
+            
+        
+        # These settings define one complete training/evaluation cycle for a
+        # single Optuna trial. Optuna only changes the architecture and PPO
+        # hyperparameters above, not the traffic-signal task itself.
+        run_config = dict(
+            state_dim = [3, 48, 46],
+            action_dim = 8,
+            max_e_steps = 3600,
+            green_duration = 7,
+            yellow_duration = 6,
+            total_episodes = 800,
+            eval_turns = 10,
+            eval_demand = list(range(1000, 2100, 100)),
+            T_horizon = 256,
+            batch_size = 16,
+            adv_normalization = True,
+            traffic_n_cars = 1000,
+            dists = ['Weibull'],
+        )
+        
+        #Initiate logging for wandb
+        
+        run = wandb.init(
+                project = 'TrafficSignalControl',
+                name= f"trial-{trial.number}-v6",
+                reinit = True,
+                mode = os.environ.get("WANDB_MODE", "online"),
+                config={
+                "search_space": {
+                    "num_conv_layers": num_conv_layers,
+                    "num_filters": num_filters,
+                    "strides": strides,
+                    "kernels_size": kernels_size,
+                    "lstm_units": lstm_units,
+                    "num_mlp_layers": num_mlp_layers,
+                    "num_neurons": num_neurons,
+                    "K_epochs": k_epochs,
+                    "learning_rate": learning_rate,
+                    "optimizer": optimizer_name,
+                    "weight_decay": weight_decay,
+                    "l2_reg": l2_param,
+                    "gamma": gamma,
+                    "lambd": lambd,
+                    "clip_rate": clip_range,
+                    "entropy_coef": entropy_coef,                
+                },
+                "run_config": run_config,
             },
-            "run_config": run_config,
-        },
-    )
-    
-    config = import_train_configuration(config_file='training_settings.ini')
-    #sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
-    traci, tc, sumo_cmd, using_libsumo = set_sumo(False, config['sumocfg_file_name'], 3600)
-    path = set_train_path(config['models_path_name'])
-    model_path = get_model_path(config['models_path_name'], model_to_test)
-    opt = PPOOptions(entropy_coef = entropy_coef, T_horizon = 256, eval_interval= 500, K_epochs=10, adv_normalization = True, 
-                     batch_size=16, lr = learning_rate, l2_reg=0.1, lambd = lambd, gamma = gamma, clip_rate = clip_range,
-                     )
-
-    hypers = Modular_Hyperparameters(num_conv_layers, num_filters, strides, kernels_size, lstm_units, 
-                                     num_mlp_layers, num_neurons, optimizer_name, weight_decay)
-
-
-    opt.dvc = torch.device(opt.dvc) # from str to torch.device
-    opt.state_dim = [3,48,46]
-    opt.action_dim = 8
-    opt.max_e_steps = 3600
-    
-    green_duration = 7
-    yellow_duration = 6
-    total_episodes = 800
-
-    agent = PPO_agent(**vars(opt), **vars(hypers))
-
-    n_cars_generated = 1000
-    trafficGen = TrafficGenerator(opt.max_e_steps, n_cars_generated)
-
-    visualization = Visualization(path, dpi=96)
+        )
         
-    simulation = Simulation(agent,trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, False, opt.dvc, traci)
+        config = import_train_configuration(config_file='training_settings.ini')
+        #sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
+        traci, tc, sumo_cmd, using_libsumo = set_sumo(False, config['sumocfg_file_name'], 3600)
+        path = set_train_path(config['models_path_name'])
+        model_path = get_model_path(config['models_path_name'], model_to_test)
+        opt = PPOOptions(entropy_coef = entropy_coef, T_horizon = 256, eval_interval= 500, K_epochs=k_epochs, adv_normalization = True, 
+                         batch_size=16, lr = learning_rate, l2_reg=l2_param, lambd = lambd, gamma = gamma, clip_rate = clip_range,
+                         )
 
-    evaluation = Simulation(agent,trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, True, opt.dvc, traci)
-
-    episode = 0
-    timestamp_start = datetime.datetime.now()
-    #introduction_pareto = 400
-    dists = ['Weibull']
-    #break
-    ema = None
-    bet = 0.95
-    while episode < total_episodes:
-        print('\n----- Episode', str(episode+1), 'of', str(total_episodes))
-        #print(agent.idx, agent.T_horizon)
-        for dist in dists:
-            current_seed = seeds_study[episode]
-            simulation_time = simulation.run(episode, current_seed, dist)  # run the simulation
-            if (agent.idx) % opt.T_horizon == 0:
-                training_time, actor_loss, critic_loss, entropy = agent.train()
-                agent.critic_losses.append(critic_loss)
-                agent.actor_losses.append(actor_loss)
-                agent.entropies.append(entropy)
-                agent.idx = 0
-                print('Traffic Distribution: {}'.format(dist))
-                print('Simulation time:', simulation_time, 's - Training time:', training_time, 's - Total:', round(simulation_time+training_time, 1), 's')
-                print('Actor loss: {:.4f}, Critic loss: {:.4f}'.format(actor_loss, critic_loss))
-                print('Entropy: {}'.format(entropy))
-               
-                #if episode+1 > 399 and (episode+1)% 25 == 0:
-                #    score, _, _ = evaluate_policy(opt, agent, turns=8, volume=1000, seed = 1000, traci=traci, sumo_cmd=sumo_cmd)
-                #    trial.report(score, step=episode)
-                #    if trial.should_prune():
-
-                #        raise optuna.TrialPruned()
-                #    wandb.log({'train/pruning_eval': float(score)})
-                ep_return = float(simulation.reward_store[-1])
-                ema = ep_return if ema is None else bet*ema + (1.0-bet)*ep_return
-                trial.report(ema, step=episode)
-                if trial.should_prune():
-                    raise optuna.TrialPruned()
-                
-                wandb.log({
-                    "train/episode": episode,
-                    "train/training_time_sec": training_time,
-                    "train/simulation_time_sec": simulation_time,
-                    "train/ema_reward": float(ema),
-                    "train/actor_loss": float(actor_loss),
-                    "train/critic_loss": float(critic_loss),
-                    "train/entropy": float(entropy),
-                    "train/reward": simulation.reward_store[-1],
-                    "train/avg-speed": simulation.speed_store[-1],
-                    "train/cumulative-wait": simulation.cumulative_wait_store[-1],
-                    "train/avg-queue-length": simulation.avg_queue_length_store[-1]
-                }, step = episode)
-                
-            else:
-                print('Simulation time:', simulation_time, 's')
-        episode += 1
-
-    rewards_perVolume = []
-    results = defaultdict(tuple) # For later: Add boxplot with distributions for each evaluated volume
-    
-    demand = [i for i in range(1000, 2100, 100)]
-    
-    #visualization = Visualization(path, dpi=96)
-    #sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
-    turns = 10
-    for i, volume in enumerate(demand):
-        print('Evaluated car volume: {}cars/hour'.format(volume))
-        score, eval_time, sim = evaluate_policy(opt, agent, turns=turns, volume=volume, seed=1000+i*turns, traci = traci, sumo_cmd = sumo_cmd) # evaluate the policy for 3 times, and get averaged result
-        rewards_perVolume.append(score)
-        wandb.log({f"eval/score@{volume}": float(score),
-                   f"eval/avg_speed@{volume}": np.mean(sim.speed_store),
-                   f"eval/cumulative_wait@{volume}": np.mean(sim.cumulative_wait_store),
-                   f"eval/avg_queue_length@{volume}": np.mean(sim.avg_queue_length_store)})
-        print('Evaluation time:', eval_time, 's', 'Score:', score)
-    weighted_avg = np.average(rewards_perVolume, weights=demand)
-    wandb.log({"eval/weighted_avg": float(weighted_avg)})
-    del visualization
-    del evaluation
-    agent.terminate()
-    del agent
-    del simulation
-    del trafficGen
-    gc.collect()
-    if torch.cuda.is_available:
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
+        hypers = Modular_Hyperparameters(num_conv_layers, num_filters, strides, kernels_size, lstm_units, 
+                                         num_mlp_layers, num_neurons, optimizer_name, weight_decay)
 
 
-    return weighted_avg  # tamaño de red o tiempo medio de entrenamiento 
+        opt.dvc = torch.device(opt.dvc) # from str to torch.device
+        opt.state_dim = [3,48,46]
+        opt.action_dim = 8
+        opt.max_e_steps = 3600
+        
+        green_duration = 7
+        yellow_duration = 6
+        total_episodes = 800
 
+        agent = PPO_agent(**vars(opt), **vars(hypers))
+
+        n_cars_generated = 1000
+        trafficGen = TrafficGenerator(opt.max_e_steps, n_cars_generated)
+
+        visualization = Visualization(path, dpi=96)
+            
+        simulation = Simulation(agent,trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, False, opt.dvc, traci)
+
+        evaluation = Simulation(agent,trafficGen,sumo_cmd,opt.max_e_steps,green_duration,yellow_duration,opt.state_dim,opt.action_dim, True, opt.dvc, traci)
+
+        episode = 0
+        timestamp_start = datetime.datetime.now()
+        #introduction_pareto = 400
+        dists = ['Weibull']
+        #break
+        ema = None
+        bet = 0.95
+        while episode < total_episodes:
+            print('\n----- Episode', str(episode+1), 'of', str(total_episodes))
+            #print(agent.idx, agent.T_horizon)
+            for dist in dists:
+                current_seed = seeds_study[episode]
+                simulation_time = simulation.run(episode, current_seed, dist)  # run the simulation
+                if (agent.idx) % opt.T_horizon == 0:
+                    training_time, actor_loss, critic_loss, entropy = agent.train()
+                    agent.critic_losses.append(critic_loss)
+                    agent.actor_losses.append(actor_loss)
+                    agent.entropies.append(entropy)
+                    agent.idx = 0
+                    print('Traffic Distribution: {}'.format(dist))
+                    print('Simulation time:', simulation_time, 's - Training time:', training_time, 's - Total:', round(simulation_time+training_time, 1), 's')
+                    print('Actor loss: {:.4f}, Critic loss: {:.4f}'.format(actor_loss, critic_loss))
+                    print('Entropy: {}'.format(entropy))
+                   
+                    if episode+1 > 399 and (episode+1)% 20 == 0:
+                        score, _, _ = evaluate_policy(opt, agent, turns=8, volume=1000, seed = 1000, traci=traci, sumo_cmd=sumo_cmd)
+                        trial.report(score, step=episode)
+                        if trial.should_prune():
+                            raise optuna.TrialPruned()
+                        wandb.log({'train/pruning_eval': float(score)})
+                    ep_return = float(simulation.reward_store[-1])
+                    ema = ep_return if ema is None else bet*ema + (1.0-bet)*ep_return
+                    #trial.report(ema, step=episode)
+                    #if trial.should_prune():
+                    #    raise optuna.TrialPruned()
+                    
+                    wandb.log({
+                        "train/episode": episode,
+                        "train/training_time_sec": training_time,
+                        "train/simulation_time_sec": simulation_time,
+                        "train/ema_reward": float(ema),
+                        "train/actor_loss": float(actor_loss),
+                        "train/critic_loss": float(critic_loss),
+                        "train/entropy": float(entropy),
+                        "train/reward": simulation.reward_store[-1],
+                        "train/avg-speed": simulation.speed_store[-1],
+                        "train/cumulative-wait": simulation.cumulative_wait_store[-1],
+                        "train/avg-queue-length": simulation.avg_queue_length_store[-1]
+                    }, step = episode)
+                    
+                else:
+                    print('Simulation time:', simulation_time, 's')
+            episode += 1
+
+        # Final model selection uses a demand sweep to favor policies that
+        # generalize across traffic intensities rather than only the training
+        # demand level.
+        rewards_perVolume = []
+        results = defaultdict(tuple) # For later: Add boxplot with distributions for each evaluated volume
+        
+        demand = [i for i in range(1000, 2100, 100)]
+        
+        #visualization = Visualization(path, dpi=96)
+        #sumo_cmd = set_sumo(False, config['sumocfg_file_name'], 3600)
+        turns = 10
+        for i, volume in enumerate(demand):
+            print('Evaluated car volume: {}cars/hour'.format(volume))
+            score, eval_time, sim = evaluate_policy(opt, agent, turns=turns, volume=volume, seed=1000+i*turns, traci = traci, sumo_cmd = sumo_cmd) # evaluate the policy for 3 times, and get averaged result
+            rewards_perVolume.append(score)
+            wandb.log({f"eval/score@{volume}": float(score),
+                       f"eval/avg_speed@{volume}": np.mean(sim.speed_store),
+                       f"eval/cumulative_wait@{volume}": np.mean(sim.cumulative_wait_store),
+                       f"eval/avg_queue_length@{volume}": np.mean(sim.avg_queue_length_store),
+                       f"eval/speed_hist@{volume}": wandb.Histogram(sim.speed_store),
+                       f"eval/cumulative_wait_hist@{volume}": wandb.Histogram(sim.cumulative_wait_store),
+                       f"eval/avg_queue_length_hist@{volume}": wandb.Histogram(sim.avg_queue_length_store),})
+                       
+            print('Evaluation time:', eval_time, 's', 'Score:', score)
+        weighted_avg = np.average(rewards_perVolume, weights=demand)
+        wandb.log({"eval/weighted_avg": float(weighted_avg)})
+        del visualization
+        del evaluation
+        agent.terminate()
+        del agent
+        del simulation
+        del trafficGen
+        gc.collect()
+        if torch.cuda.is_available:
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        return weighted_avg  # tamaño de red o tiempo medio de entrenamiento 
+    except RuntimeError as e:
+        if "CUDA out of memory" in str(e):
+            trial.set_user_attr("error", "cuda_oom")
+            # free memory so the *next* trial can start cleanly
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            gc.collect()
+            # Prefer to prune (or you can return a very bad value)
+            raise TrialPruned("Pruned due to CUDA OOM")
+        # Re-raise other runtime errors
+        raise
+    finally:
+        # extra safety
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+# Fixed per-episode seeds make trial comparisons more meaningful because each
+# architecture is exposed to the same sequence of traffic realizations.
 seeds_study = np.arange(0, 800, 1)
 
 def main():
+    """Create/load an Optuna study and launch the requested search."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--study-name", default="ppo_sumo_bo", type=str)
     parser.add_argument("--storage", default="sqlite:///optuna_rl.db", type=str,
@@ -661,7 +737,6 @@ def main():
             "storage": args.storage,
             "sampler": type(study.sampler).__name__,
             "pruner": type(study.pruner).__name__,
-            "seed": args.seed,
             "elapsed_sec": elapsed
         }, f, indent=2)
 
