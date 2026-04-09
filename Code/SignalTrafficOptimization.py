@@ -488,7 +488,7 @@ def objective(trial):
         
         run = wandb.init(
                 project = 'TrafficSignalControl',
-                name= f"trial-{trial.number}-v6",
+                name= f"trial-{trial.number}-v7",
                 reinit = True,
                 mode = os.environ.get("WANDB_MODE", "online"),
                 config={
@@ -626,7 +626,11 @@ def objective(trial):
                        
             print('Evaluation time:', eval_time, 's', 'Score:', score)
         weighted_avg = np.average(rewards_perVolume, weights=demand)
-        wandb.log({"eval/weighted_avg": float(weighted_avg)})
+        wandb.log({
+            "eval/weighted_avg": float(weighted_avg),
+            "eval/demand_levels": demand,
+            "eval/score_vector": [float(score) for score in rewards_perVolume],
+        })
         del visualization
         del evaluation
         agent.terminate()
