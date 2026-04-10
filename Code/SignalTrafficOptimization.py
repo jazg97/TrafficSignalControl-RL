@@ -716,7 +716,7 @@ def main():
     print(f"Total time: {elapsed/60:.1f} min")
 
     # Persist analysis artifacts
-    out_dir = f"optuna_runs/{args.study_name}_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    out_dir = f"optuna_runs/{args.study_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     os.makedirs(out_dir, exist_ok=True)
 
     # 1) Full trials dataframe
