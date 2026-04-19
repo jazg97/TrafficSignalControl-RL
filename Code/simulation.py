@@ -132,7 +132,7 @@ class Simulation:
         self._speed_store = []
         self._cumulative_wait_store = []
         self._avg_queue_length_store = []
-        self.lstm_units = self._Agent.hin_hoder.shape[-1]
+        self.recurrent_units = self._Agent.hin_hoder.shape[-1]
         self._eval = mode
         self.dvc = device
         self.traci = traci
@@ -183,7 +183,7 @@ class Simulation:
         old_action = 0
         last_queue = 0
         self._simulate(50)  ## Warm up the network before the first decision.
-        h_out = (torch.zeros([1, 1, self.lstm_units], dtype=torch.float).to(self.dvc), torch.zeros([1, 1, self.lstm_units], dtype=torch.float).to(self.dvc))
+        h_out = self._Agent.initial_hidden(batch_size=1)
         old_queue = self._get_queue_length()
         while self._step < self._max_steps:
             
@@ -214,7 +214,10 @@ class Simulation:
             # Chosen action
             h_in = h_out
             action, h_out, logprob_a = self._choose_action(current_state[None, ...], h_in, self._eval)            
-            h_out = (h_out[0].detach(), h_out[1].detach())
+            if isinstance(h_out, tuple):
+                h_out = (h_out[0].detach(), h_out[1].detach())
+            else:
+                h_out = h_out.detach()
             last_queue = self._get_queue_length()
             
             # Enforce a yellow transition only when the chosen action changes.
@@ -241,11 +244,9 @@ class Simulation:
                 else:
                     done = 1
                 if not self._eval and self._Agent.idx < self._Agent.T_horizon:
-                    # The PPO implementation stores LSTM hidden and cell states
-                    # as a compact 2 x hidden_units tensor per transition.
-                    cat_hin = torch.cat((h_in[0], h_in[1]), dim=1).cpu()
-                    cat_hout = torch.cat((h_out[0], h_out[1]), dim=1).cpu()
-                    self._Agent.put_data(current_state, action, reward, next_state, logprob_a, cat_hin.numpy(), cat_hout.numpy(), done, done)            
+                    packed_hin = self._Agent.pack_hidden(h_in)
+                    packed_hout = self._Agent.pack_hidden(h_out)
+                    self._Agent.put_data(current_state, action, reward, next_state, logprob_a, packed_hin, packed_hout, done, done)            
             # saving only the meaningful reward to better see if the agent is behaving correctly:wq
             #if reward < 0:
             self._sum_neg_reward += reward
@@ -312,7 +313,7 @@ class Simulation:
         #print(state.shape)
         with torch.no_grad():
             pi, h_out = self._Actor.pi(state, h_in, softmax_dim=-1)
-            pi = pi.view(-1, 8) #Adjusting dimensions after LSTM layer
+            pi = pi.view(-1, 8) # Adjust dimensions after the recurrent block
             if deterministic:
                 action = torch.argmax(pi).item()
                 return action, h_out, None

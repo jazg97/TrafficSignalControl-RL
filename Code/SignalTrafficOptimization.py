@@ -4,7 +4,7 @@ This script glues together the main components of the repository:
 
 - ``generator.py`` creates one traffic demand profile per episode
 - ``simulation.py`` executes SUMO and collects transitions/metrics
-- ``networks.py`` defines the CNN+LSTM actor/critic
+- ``networks.py`` defines the CNN+recurrent actor/critic
 - this file defines the PPO update logic and Optuna search procedure
 
 The training objective is the weighted average evaluation reward across
@@ -181,16 +181,20 @@ def evaluate_policy(opt, agent, turns, volume, seed, traci, sumo_cmd):
 # Need to update to SUMO environment
 class PPO_agent():
     def __init__(self, **kwargs):
-        """CNN+LSTM PPO agent specialized for the 8-phase SUMO controller."""
+        """CNN+recurrent PPO agent specialized for the 8-phase SUMO controller."""
         # Init hyperparameters for PPO agent, just like "self.gamma = opt.gamma, self.lambd = opt.lambd, ..."
         self.__dict__.update(kwargs)
+        self.recurrent_type = getattr(self, "recurrent_type", "lstm")
+        self.hidden_state_slots = 2 if self.recurrent_type == "lstm" else 1
 
         '''Build Actor and Critic'''
         self.actor = ModularActor(self.num_conv_layers, self.num_filters, self.strides, self.kernels_size, 
-                                  self.num_mlp_layers, self.lstm_units, self.mlp_neurons, self.action_dim).to(self.dvc)
+                                  self.num_mlp_layers, self.recurrent_units, self.mlp_neurons, self.action_dim,
+                                  recurrent_type=self.recurrent_type).to(self.dvc)
         self.actor.apply(weight_init)
         self.critic = ModularCritic(self.num_conv_layers, self.num_filters, self.strides, self.kernels_size, 
-                                    self.num_mlp_layers, self.lstm_units, self.mlp_neurons).to(self.dvc)
+                                    self.num_mlp_layers, self.recurrent_units, self.mlp_neurons,
+                                    recurrent_type=self.recurrent_type).to(self.dvc)
         self.critic.apply(weight_init)
         
         if self.optimizer == "adamw":
@@ -207,8 +211,8 @@ class PPO_agent():
         self.s_next_hoder = np.zeros(([self.T_horizon] + self.state_dim), dtype=np.float32) #
         self.val_hoder = np.zeros((self.T_horizon,1), dtype=np.float32) #expected value
         self.logprob_a_hoder = np.zeros((self.T_horizon, 1), dtype=np.float32) #logprob_action
-        self.hin_hoder  = np.zeros((self.T_horizon,2, self.lstm_units), dtype=np.float32)
-        self.hout_hoder = np.zeros((self.T_horizon,2, self.lstm_units), dtype=np.float32)
+        self.hin_hoder  = np.zeros((self.T_horizon, self.hidden_state_slots, self.recurrent_units), dtype=np.float32)
+        self.hout_hoder = np.zeros((self.T_horizon, self.hidden_state_slots, self.recurrent_units), dtype=np.float32)
         self.done_hoder = np.zeros((self.T_horizon, 1), dtype=np.bool_)
         self.dw_hoder = np.zeros((self.T_horizon, 1), dtype=np.bool_)
         self.idx = 0
@@ -217,6 +221,24 @@ class PPO_agent():
         self.actor_losses = []
         self.critic_losses= []
         self.entropies = []
+
+    def unpack_hidden(self, packed_hidden):
+        """Convert packed rollout storage into the format expected by PyTorch RNNs."""
+        if self.recurrent_type == "lstm":
+            h_state = packed_hidden[:, 0, :].unsqueeze(0).to(self.dvc)
+            c_state = packed_hidden[:, 1, :].unsqueeze(0).to(self.dvc)
+            return (h_state, c_state)
+        return packed_hidden[:, 0, :].unsqueeze(0).to(self.dvc)
+
+    def pack_hidden(self, hidden):
+        """Convert PyTorch hidden states into the rollout-buffer layout."""
+        if self.recurrent_type == "lstm":
+            return torch.cat((hidden[0], hidden[1]), dim=1).squeeze(0).cpu().numpy()
+        return hidden.detach().squeeze(0).cpu().numpy()
+
+    def initial_hidden(self, batch_size=1):
+        """Build a zero recurrent state matching the configured layer type."""
+        return self.actor.initial_hidden(batch_size=batch_size, device=self.dvc)
 
     def train(self):
         """Run one PPO optimization pass over the currently filled horizon.
@@ -235,10 +257,8 @@ class PPO_agent():
         s_next = torch.from_numpy(self.s_next_hoder).to(self.dvc)
         old_prob_a_all = torch.from_numpy(self.logprob_a_hoder).to(self.dvc)
         
-        h1_in, h2_in = torch.from_numpy(self.hin_hoder[:, 0, :]), torch.from_numpy(self.hin_hoder[:, 1, :])
-        first_hidden = (h1_in.unsqueeze(0).to(self.dvc), h2_in.unsqueeze(0).to(self.dvc))
-        h1_out, h2_out= torch.from_numpy(self.hout_hoder[:, 0, :]), torch.from_numpy(self.hout_hoder[:, 1, :])
-        second_hidden = (h1_out.unsqueeze(0).to(self.dvc), h2_out.unsqueeze(0).to(self.dvc))
+        first_hidden = self.unpack_hidden(torch.from_numpy(self.hin_hoder))
+        second_hidden = self.unpack_hidden(torch.from_numpy(self.hout_hoder))
         
         done = torch.from_numpy(self.done_hoder).to(self.dvc)
         dw = torch.from_numpy(self.dw_hoder).to(self.dvc)
@@ -292,15 +312,24 @@ class PPO_agent():
             td_perm = td_target.index_select(0, perm)
             old_prob_a_perm = old_prob_a_all.index_select(0, perm)
             
-            f1 = first_hidden[0].index_select(1, perm)
-            f2 = first_hidden[1].index_select(1, perm)
+            if self.recurrent_type == "lstm":
+                hidden_perm = (
+                    first_hidden[0].index_select(1, perm),
+                    first_hidden[1].index_select(1, perm),
+                )
+            else:
+                hidden_perm = first_hidden.index_select(1, perm)
             '''mini-batch PPO update'''
             for i in range(optim_iter_num):
                 index = slice(i * self.batch_size, min((i + 1) * self.batch_size, s.shape[0]))
 
                 self.actor_optimizer.zero_grad()                
                 '''actor update'''
-                prob, _ = self.actor.pi(s_perm[index], (f1[:, index, :], f2[:, index, :]), softmax_dim=-1)
+                if self.recurrent_type == "lstm":
+                    hidden_batch = (hidden_perm[0][:, index, :], hidden_perm[1][:, index, :])
+                else:
+                    hidden_batch = hidden_perm[:, index, :]
+                prob, _ = self.actor.pi(s_perm[index], hidden_batch, softmax_dim=-1)
                 prob = prob.view(-1,8)
                 dist = Categorical(prob)
                 entropy = dist.entropy().sum(0, keepdim=True)
@@ -319,7 +348,7 @@ class PPO_agent():
 
                 self.critic_optimizer.zero_grad()
                 '''critic update'''
-                c_loss = (self.critic(s_perm[index], (f1[:, index, :], f2[:, index, :])).view(-1,1) - td_perm[index]).pow(2).mean()
+                c_loss = (self.critic(s_perm[index], hidden_batch).view(-1,1) - td_perm[index]).pow(2).mean()
                 for name, param in self.critic.named_parameters():
                     if 'weight' in name:
                         c_loss += param.pow(2).sum() * self.l2_reg
@@ -404,19 +433,21 @@ class PPOOptions:
 
 class Modular_Hyperparameters:
     def __init__(self, num_conv_layers: int, num_filters: list, strides: list, 
-                 kernels_size: list, lstm_units: int, num_mlp_layers: int, 
-                 mlp_neurons: list, optimizer: str, weight_decay: float):
+                 kernels_size: list, recurrent_units: int, num_mlp_layers: int, 
+                 mlp_neurons: list, optimizer: str, weight_decay: float,
+                 recurrent_type: str = "lstm"):
         """Container for network-search hyperparameters proposed by Optuna."""
 
         self.num_conv_layers = num_conv_layers
         self.num_filters = num_filters
         self.strides = strides
         self.kernels_size = kernels_size
-        self.lstm_units = lstm_units
+        self.recurrent_units = recurrent_units
         self.num_mlp_layers = num_mlp_layers
         self.mlp_neurons = mlp_neurons
         self.optimizer = optimizer
         self.weight_decay = weight_decay
+        self.recurrent_type = recurrent_type
 
 model_to_test = 555
 green_duration = 7
@@ -438,8 +469,11 @@ def objective(trial):
         strides = [trial.suggest_int("stride_size_"+str(i), 1, 3, 1) for i in range(num_conv_layers)]
         kernels_size= [trial.suggest_int("kernel_size_"+str(i), 3, 9, 2) for i in range(num_conv_layers)]
 
-        #LSTM units
-        lstm_units = trial.suggest_categorical("lstm_units", [16, 32, 64, 96, 128, 256])
+        recurrent_type = trial.suggest_categorical("recurrent_type", ["lstm", "gru"])
+
+        # Hidden units for the recurrent layer. GRU reuses the same search
+        # values as LSTM so the comparison stays capacity-matched.
+        recurrent_units = trial.suggest_categorical("recurrent_units", [16, 32, 64, 96, 128, 256])
 
         # Fully-connected hyperparameters
         num_mlp_layers = trial.suggest_int("num_mlp_layers", 2, 3)
@@ -487,8 +521,8 @@ def objective(trial):
         #Initiate logging for wandb
         
         run = wandb.init(
-                project = 'TrafficSignalControl',
-                name= f"trial-{trial.number}-v7",
+                project = 'TrafficSignalControl-Expanded',
+                name= f"trial-{trial.number}-v0",
                 reinit = True,
                 mode = os.environ.get("WANDB_MODE", "online"),
                 config={
@@ -497,7 +531,8 @@ def objective(trial):
                     "num_filters": num_filters,
                     "strides": strides,
                     "kernels_size": kernels_size,
-                    "lstm_units": lstm_units,
+                    "recurrent_type": recurrent_type,
+                    "recurrent_units": recurrent_units,
                     "num_mlp_layers": num_mlp_layers,
                     "num_neurons": num_neurons,
                     "K_epochs": k_epochs,
@@ -523,8 +558,9 @@ def objective(trial):
                          batch_size=16, lr = learning_rate, l2_reg=l2_param, lambd = lambd, gamma = gamma, clip_rate = clip_range,
                          )
 
-        hypers = Modular_Hyperparameters(num_conv_layers, num_filters, strides, kernels_size, lstm_units, 
-                                         num_mlp_layers, num_neurons, optimizer_name, weight_decay)
+        hypers = Modular_Hyperparameters(num_conv_layers, num_filters, strides, kernels_size, recurrent_units, 
+                                         num_mlp_layers, num_neurons, optimizer_name, weight_decay,
+                                         recurrent_type)
 
 
         opt.dvc = torch.device(opt.dvc) # from str to torch.device
@@ -668,8 +704,8 @@ seeds_study = np.arange(0, 800, 1)
 def main():
     """Create/load an Optuna study and launch the requested search."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--study-name", default="ppo_sumo_bo", type=str)
-    parser.add_argument("--storage", default="sqlite:///optuna_rl.db", type=str,
+    parser.add_argument("--study-name", default="ppo_sumo_bo-expanded", type=str)
+    parser.add_argument("--storage", default="sqlite:///optuna_rl-expanded.db", type=str,
                         help="Use SQLite for persistence & parallelism")
     parser.add_argument("--n-trials", default=30, type=int)
     parser.add_argument("--timeout", default=None, type=int,
