@@ -521,7 +521,7 @@ def objective(trial):
         #Initiate logging for wandb
         
         run = wandb.init(
-                project = 'TrafficSignalControl-Expanded',
+                project = 'TrafficSignalControl-Expanded-v0',
                 name= f"trial-{trial.number}-v0",
                 reinit = True,
                 mode = os.environ.get("WANDB_MODE", "online"),
@@ -608,11 +608,28 @@ def objective(trial):
                     print('Entropy: {}'.format(entropy))
                    
                     if episode+1 > 399 and (episode+1)% 20 == 0:
-                        score, _, _ = evaluate_policy(opt, agent, turns=8, volume=1000, seed = 1000, traci=traci, sumo_cmd=sumo_cmd)
-                        trial.report(score, step=episode)
+                        pruning_demands = [1000, 1300, 1600]
+                        pruning_scores = []
+                        pruning_log = {}
+                        for i, volume in enumerate(pruning_demands):
+                            score, _, _ = evaluate_policy(
+                                opt,
+                                agent,
+                                turns=4,
+                                volume=volume,
+                                seed=1000 + i * 10,
+                                traci=traci,
+                                sumo_cmd=sumo_cmd,
+                            )
+                            pruning_scores.append(score)
+                            pruning_log[f"train/pruning_eval@{volume}"] = float(score)
+
+                        pruning_score = float(np.average(pruning_scores, weights=pruning_demands))
+                        trial.report(pruning_score, step=episode)
                         if trial.should_prune():
                             raise optuna.TrialPruned()
-                        wandb.log({'train/pruning_eval': float(score)})
+                        pruning_log["train/pruning_eval"] = pruning_score
+                        wandb.log(pruning_log)
                     ep_return = float(simulation.reward_store[-1])
                     ema = ep_return if ema is None else bet*ema + (1.0-bet)*ep_return
                     #trial.report(ema, step=episode)
