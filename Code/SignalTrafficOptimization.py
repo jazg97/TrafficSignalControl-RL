@@ -521,7 +521,7 @@ def objective(trial):
         #Initiate logging for wandb
         
         run = wandb.init(
-                project = 'TrafficSignalControl-Expanded-v0',
+                project = 'TrafficSignalControl-Expanded-v1',
                 name= f"trial-{trial.number}-v0",
                 reinit = True,
                 mode = os.environ.get("WANDB_MODE", "online"),
@@ -617,7 +617,7 @@ def objective(trial):
                                 agent,
                                 turns=4,
                                 volume=volume,
-                                seed=1000 + i * 10,
+                                seed=3000 + i * 10,
                                 traci=traci,
                                 sumo_cmd=sumo_cmd,
                             )
