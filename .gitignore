@@ -1,0 +1,52 @@
+# Python cache / tooling
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+
+# Local agent / editor artifacts
+.codex_pycache/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+*~
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+*/.ipynb_checkpoints/
+
+# Weights & Biases
+wandb/
+*/wandb/
+
+# Optuna / experiment outputs
+optuna_runs/
+*/optuna_runs/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Training artifacts
+models/
+*/models/
+*.pth
+*.pt
+*.ckpt
+
+# Archives
+*.zip
+*.tar
+*.gz

@@ -41,10 +41,18 @@ import argparse, json, os, time, shutil, random
 from datetime import datetime
 import numpy as np
 import torch
-import optuna
-from optuna.samplers import TPESampler
-from optuna.pruners import MedianPruner
-from optuna.exceptions import TrialPruned
+try:
+    import optuna
+    from optuna.samplers import TPESampler
+    from optuna.pruners import MedianPruner
+    from optuna.exceptions import TrialPruned
+except ImportError:  # The standalone baseline runner does not require Optuna.
+    optuna = None
+    TPESampler = None
+    MedianPruner = None
+
+    class TrialPruned(RuntimeError):
+        pass
 #from sklearn.utils import shuffle
 
 import os
@@ -54,7 +62,10 @@ import sys
 import traci
 import random
 import timeit
-import wandb
+try:
+    import wandb
+except ImportError:  # Only the Optuna study path uses W&B.
+    wandb = None
 
 from generator import TrafficGenerator
 from memory import Memory     ## Prority Experience Memory 
@@ -455,6 +466,8 @@ yellow_duration = 6
 
 def objective(trial):
     """Train one PPO configuration and return its weighted evaluation score."""
+    if wandb is None:
+        raise ModuleNotFoundError("wandb is required for the Optuna study path")
     seed = trial.number
     # Seeds in trial for episodes
     #shuffled_seeds = shuffle(seeds_study, random_state = seed)
@@ -720,6 +733,8 @@ seeds_study = np.arange(0, 800, 1)
 
 def main():
     """Create/load an Optuna study and launch the requested search."""
+    if optuna is None:
+        raise ModuleNotFoundError("optuna is required for SignalTrafficOptimization.py")
     parser = argparse.ArgumentParser()
     parser.add_argument("--study-name", default="ppo_sumo_bo-expanded", type=str)
     parser.add_argument("--storage", default="sqlite:///optuna_rl-expanded.db", type=str,

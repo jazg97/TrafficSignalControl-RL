@@ -11,12 +11,17 @@ The class is intentionally agnostic to the training algorithm beyond expecting
 an agent object that exposes ``actor``, ``critic``, and ``put_data`` methods.
 """
 
-import torch
 import traci
 from traci import constants as tc
 import timeit
 import numpy as np
-from torch.distributions import Categorical
+
+try:
+    import torch
+    from torch.distributions import Categorical
+except ImportError:  # Max-pressure evaluation has no PyTorch dependency.
+    torch = None
+    Categorical = None
 
 
 # phase codes based on SUMO environment.net.xml 
@@ -110,16 +115,19 @@ def _get_state(traci):
     return state[:, state.shape[1]//2 - 24: state.shape[1]//2 + 24, state.shape[2]//2 - 23: state.shape[2]//2 + 23]
 
 class Simulation:
-    def __init__(self, Agent, TrafficGen, sumo_cmd, max_steps, green_duration, yellow_duration, num_states, num_actions, mode, device, traci):
+    def __init__(self, Agent, TrafficGen, sumo_cmd, max_steps, green_duration, yellow_duration, num_states, num_actions, mode, device, traci, controller=None):
         """Wrap one SUMO environment instance plus metric tracking buffers.
 
         The same class is used for both training and evaluation so reward
         calculation, state extraction, and traffic-light timing remain
         consistent across rollout collection and final scoring.
         """
+        if Agent is None and controller is None:
+            raise ValueError("Simulation requires either a PPO agent or a controller")
         self._Agent = Agent
-        self._Actor = Agent.actor
-        self._Critic= Agent.critic
+        self._controller = controller
+        self._Actor = Agent.actor if Agent is not None else None
+        self._Critic = Agent.critic if Agent is not None else None
         self._TrafficGen = TrafficGen
         self._step = 0
         self._sumo_cmd = sumo_cmd
@@ -132,7 +140,7 @@ class Simulation:
         self._speed_store = []
         self._cumulative_wait_store = []
         self._avg_queue_length_store = []
-        self.recurrent_units = self._Agent.hin_hoder.shape[-1]
+        self.recurrent_units = self._Agent.hin_hoder.shape[-1] if Agent is not None else None
         self._eval = mode
         self.dvc = device
         self.traci = traci
@@ -183,12 +191,12 @@ class Simulation:
         old_action = 0
         last_queue = 0
         self._simulate(50)  ## Warm up the network before the first decision.
-        h_out = self._Agent.initial_hidden(batch_size=1)
+        h_out = self._Agent.initial_hidden(batch_size=1) if self._Agent is not None else None
         old_queue = self._get_queue_length()
         while self._step < self._max_steps:
             
             # get current state of the intersection
-            current_state = _get_state(self.traci)
+            current_state = _get_state(self.traci) if self._Agent is not None else None
             #curr_state2 = _get_state()
             
             #print(np.array_equal(current_state, curr_state2))
@@ -213,11 +221,15 @@ class Simulation:
             current_phase = int(self.traci.trafficlight.getPhase("TL")/2)
             # Chosen action
             h_in = h_out
-            action, h_out, logprob_a = self._choose_action(current_state[None, ...], h_in, self._eval)            
-            if isinstance(h_out, tuple):
-                h_out = (h_out[0].detach(), h_out[1].detach())
+            if self._controller is not None:
+                action = self._controller.choose_action(self.traci, old_action)
+                logprob_a = None
             else:
-                h_out = h_out.detach()
+                action, h_out, logprob_a = self._choose_action(current_state[None, ...], h_in, self._eval)
+                if isinstance(h_out, tuple):
+                    h_out = (h_out[0].detach(), h_out[1].detach())
+                else:
+                    h_out = h_out.detach()
             last_queue = self._get_queue_length()
             
             # Enforce a yellow transition only when the chosen action changes.
@@ -233,11 +245,11 @@ class Simulation:
                 #last_queue = self._get_queue_length()
                 # Perform chosen action on environment
                 self._set_green_phase(action)
-                self._simulate(7)
+                self._simulate(self._green_duration)
             new_queue = self._get_queue_length()
             # Compute the shaped reward after the effect of the chosen phase.
             reward = (last_queue - new_queue) - 0.2*new_queue #max(-200, -self._get_queue_length()) #+ last_queue
-            if self._step != 0:
+            if self._step != 0 and self._Agent is not None:
                 next_state = _get_state(self.traci)
                 if self._step < self._max_steps - self._green_duration - self._yellow_duration:
                     done = 0
