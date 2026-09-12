@@ -1,0 +1,7 @@
+# Runtime versions observed in RL-env (Python 3.12.2).
+# Install torch separately using the CPU or CUDA command in Code/OPTIMIZED_PPO.md.
+numpy==1.26.4
+scipy==1.16.1
+matplotlib==3.8.3
+traci==1.20.0
+sumolib==1.20.0

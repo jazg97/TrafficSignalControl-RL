@@ -145,12 +145,14 @@ class Simulation:
         self.dvc = device
         self.traci = traci
 
-    def run(self, episode: int, seed: int, distribution: str ='Weibull'):
+    def run(self, episode: int, seed: int, distribution: str ='Weibull', recording_dir=None):
         """
         Run one SUMO episode and optionally push transitions into the agent.
 
         ``mode=False`` means training data will be collected. ``mode=True``
         keeps the environment deterministic for policy evaluation.
+        ``recording_dir`` optionally retains trajectories, signals, and replay
+        inputs without modifying the controller or simulator dynamics.
         """
         self.training = False
         start_time = timeit.default_timer()
@@ -160,7 +162,11 @@ class Simulation:
             self._TrafficGen.generate_routefile(seed=seed, distribution=distribution)
         else:
             self._TrafficGen.generate_routefile(seed=seed, distribution=distribution)
-        self.traci.start(self._sumo_cmd)
+        sumo_cmd = self._sumo_cmd
+        if recording_dir is not None:
+            from episode_recording import prepare_recording
+            sumo_cmd = prepare_recording(sumo_cmd, recording_dir, seed, episode, distribution)
+        self.traci.start(sumo_cmd)
         '''TLS_ID = "TL"  # your traffic light id
         RADIUS = 300.0  # enough to cover incoming approaches you map to the grid
         

@@ -140,8 +140,10 @@ def plot_summary(path, summaries):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--max-pressure", required=True)
-    parser.add_argument("--ppo-default", required=True)
+    parser.add_argument("--max-pressure", "--first", dest="max_pressure", required=True,
+                        help="First controller's evaluation_episodes.csv")
+    parser.add_argument("--ppo-default", "--second", dest="ppo_default", required=True,
+                        help="Second controller's evaluation_episodes.csv")
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
 

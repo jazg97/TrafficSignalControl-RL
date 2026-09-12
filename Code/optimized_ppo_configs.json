@@ -1,0 +1,30 @@
+{
+  "ppo_lstm": {
+    "controller": "PPO-LSTM (Opt.)",
+    "configuration": "ppo_lstm_trial_261",
+    "source": {"study": "ppo_agent_search3", "trial": 261, "wandb_run": "91nz8axc"},
+    "ppo": {
+      "num_conv_layers": 1, "num_filters": [32], "strides": [3], "kernels_size": [5],
+      "recurrent_type": "lstm", "recurrent_units": 128,
+      "num_mlp_layers": 2, "mlp_neurons": [128], "optimizer": "adamw",
+      "weight_decay": 1.9508076522292387e-6, "learning_rate": 2.678583272119911e-5,
+      "K_epochs": 5, "l2_reg": 2.6315194175759474e-5,
+      "gamma": 0.986, "lambd": 0.92, "clip_rate": 0.21,
+      "entropy_coef": 0.0017544682550067105, "entropy_coef_decay": 0.99
+    }
+  },
+  "ppo_gru": {
+    "controller": "PPO-GRU (Opt.)",
+    "configuration": "ppo_gru_trial_346",
+    "source": {"study": "ppo_agent_search3", "trial": 346, "wandb_run": "7gymxfz3"},
+    "ppo": {
+      "num_conv_layers": 1, "num_filters": [16], "strides": [2], "kernels_size": [3],
+      "recurrent_type": "gru", "recurrent_units": 256,
+      "num_mlp_layers": 2, "mlp_neurons": [128], "optimizer": "adamw",
+      "weight_decay": 1.9219978418355244e-6, "learning_rate": 2.690349557334268e-5,
+      "K_epochs": 5, "l2_reg": 1.684118236149533e-7,
+      "gamma": 0.98, "lambd": 0.93, "clip_rate": 0.19,
+      "entropy_coef": 0.0012012788750820351, "entropy_coef_decay": 0.99
+    }
+  }
+}

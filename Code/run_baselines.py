@@ -149,6 +149,8 @@ def write_episode_rows(output_dir, rows, stem="evaluation_episodes"):
         "avg_speed",
         "simulation_time",
     ]
+    if any("replay_directory" in row for row in rows):
+        columns.append("replay_directory")
     with (output_dir / f"{stem}.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=columns)
         writer.writeheader()
@@ -171,8 +173,10 @@ def build_sumo():
     return traci_like, sumo_cmd
 
 
-def evaluate(controller_name, output_dir, agent=None, controller=None, device=None):
-    """Run the fixed 11-volume, 10-seed evaluation protocol."""
+def evaluate(controller_name, output_dir, agent=None, controller=None, device=None,
+             configuration=None, experiment=None, global_seed=BASELINE_SEED,
+             record_replays=False):
+    """Run the baseline-compatible sweep, optionally with a custom protocol/replays."""
     if (agent is None) == (controller is None):
         raise ValueError("Supply exactly one of agent or controller")
 
@@ -180,35 +184,50 @@ def evaluate(controller_name, output_dir, agent=None, controller=None, device=No
     # uses the episode seed, while legacy route choices use NumPy's global RNG.
     # Resetting here gives both new controllers the same reproducible sequence
     # without changing the historical generator implementation.
-    set_global_seeds(BASELINE_SEED)
+    experiment = EXPERIMENT_CONFIG if experiment is None else experiment
+    configuration = (CONTROLLER_CONFIGURATIONS[controller_name]
+                     if configuration is None else configuration)
+    set_global_seeds(global_seed)
     traci_like, sumo_cmd = build_sumo()
     rows = []
-    for volume_index, volume in enumerate(EXPERIMENT_CONFIG["evaluation_demand"]):
-        base_seed = 1000 + volume_index * 10
-        traffic_gen = TrafficGenerator(EXPERIMENT_CONFIG["max_e_steps"], volume)
+    turns = experiment["evaluation_episodes_per_volume"]
+    for volume_index, volume in enumerate(experiment["evaluation_demand"]):
+        base_seed = 1000 + volume_index * turns
+        traffic_gen = TrafficGenerator(experiment["max_e_steps"], volume)
         simulation = Simulation(
             agent,
             traffic_gen,
             sumo_cmd,
-            EXPERIMENT_CONFIG["max_e_steps"],
-            EXPERIMENT_CONFIG["green_duration"],
-            EXPERIMENT_CONFIG["yellow_duration"],
-            EXPERIMENT_CONFIG["state_dim"],
-            EXPERIMENT_CONFIG["action_dim"],
+            experiment["max_e_steps"],
+            experiment["green_duration"],
+            experiment["yellow_duration"],
+            experiment["state_dim"],
+            experiment["action_dim"],
             True,
             device,
             traci_like,
             controller=controller,
         )
-        for episode_index in range(EXPERIMENT_CONFIG["evaluation_episodes_per_volume"]):
+        for episode_index in range(turns):
             seed = base_seed + episode_index
-            simulation_time, _ = simulation.run(
-                episode_index + 1, seed, EXPERIMENT_CONFIG["distribution"]
-            )
+            run_kwargs = {}
+            if record_replays:
+                run_kwargs["recording_dir"] = (Path(output_dir) / "replays"
+                                               / f"volume_{volume}" / f"seed_{seed}")
+            try:
+                simulation_time, _ = simulation.run(
+                    episode_index + 1, seed, experiment["distribution"], **run_kwargs
+                )
+            except BaseException:
+                try:
+                    traci_like.close()
+                except Exception:
+                    pass
+                raise
             rows.append(
                 {
                     "controller": controller_name,
-                    "configuration": CONTROLLER_CONFIGURATIONS[controller_name],
+                    "configuration": configuration,
                     "volume": volume,
                     "seed": seed,
                     "reward": simulation.reward_store[-1],
@@ -218,13 +237,18 @@ def evaluate(controller_name, output_dir, agent=None, controller=None, device=No
                     "simulation_time": simulation_time,
                 }
             )
+            if record_replays:
+                rows[-1]["replay_directory"] = str(
+                    Path(run_kwargs["recording_dir"]).relative_to(output_dir)
+                )
             # Keep partial results durable during the 110-episode sweep.
             write_episode_rows(output_dir, rows)
     return rows
 
 
-def make_default_agent(device_name):
-    """Construct the existing custom PPO agent with the a-priori baseline config."""
+def make_default_agent(device_name, ppo_config=None):
+    """Construct custom PPO with the baseline or an explicit fixed configuration."""
+    ppo_config = PPO_DEFAULT_CONFIG if ppo_config is None else ppo_config
     try:
         import torch
         from SignalTrafficOptimization import (
@@ -234,7 +258,7 @@ def make_default_agent(device_name):
         )
     except ImportError as exc:
         raise ModuleNotFoundError(
-            "The ppo-default mode requires the project's PyTorch training environment"
+            "PPO training/evaluation requires the project's PyTorch training environment"
         ) from exc
 
     if device_name == "auto":
@@ -243,33 +267,33 @@ def make_default_agent(device_name):
         raise RuntimeError("--device cuda was requested but CUDA is unavailable")
 
     options = PPOOptions(
-        entropy_coef=PPO_DEFAULT_CONFIG["entropy_coef"],
-        entropy_coef_decay=PPO_DEFAULT_CONFIG["entropy_coef_decay"],
+        entropy_coef=ppo_config["entropy_coef"],
+        entropy_coef_decay=ppo_config["entropy_coef_decay"],
         T_horizon=EXPERIMENT_CONFIG["T_horizon"],
-        K_epochs=PPO_DEFAULT_CONFIG["K_epochs"],
+        K_epochs=ppo_config["K_epochs"],
         adv_normalization=EXPERIMENT_CONFIG["adv_normalization"],
         batch_size=EXPERIMENT_CONFIG["batch_size"],
-        lr=PPO_DEFAULT_CONFIG["learning_rate"],
-        l2_reg=PPO_DEFAULT_CONFIG["l2_reg"],
-        lambd=PPO_DEFAULT_CONFIG["lambd"],
-        gamma=PPO_DEFAULT_CONFIG["gamma"],
-        clip_rate=PPO_DEFAULT_CONFIG["clip_rate"],
+        lr=ppo_config["learning_rate"],
+        l2_reg=ppo_config["l2_reg"],
+        lambd=ppo_config["lambd"],
+        gamma=ppo_config["gamma"],
+        clip_rate=ppo_config["clip_rate"],
     )
     options.dvc = torch.device(device_name)
     options.state_dim = list(EXPERIMENT_CONFIG["state_dim"])
     options.action_dim = EXPERIMENT_CONFIG["action_dim"]
     options.max_e_steps = EXPERIMENT_CONFIG["max_e_steps"]
     hypers = Modular_Hyperparameters(
-        PPO_DEFAULT_CONFIG["num_conv_layers"],
-        PPO_DEFAULT_CONFIG["num_filters"],
-        PPO_DEFAULT_CONFIG["strides"],
-        PPO_DEFAULT_CONFIG["kernels_size"],
-        PPO_DEFAULT_CONFIG["recurrent_units"],
-        PPO_DEFAULT_CONFIG["num_mlp_layers"],
-        PPO_DEFAULT_CONFIG["mlp_neurons"],
-        PPO_DEFAULT_CONFIG["optimizer"],
-        PPO_DEFAULT_CONFIG["weight_decay"],
-        PPO_DEFAULT_CONFIG["recurrent_type"],
+        ppo_config["num_conv_layers"],
+        ppo_config["num_filters"],
+        ppo_config["strides"],
+        ppo_config["kernels_size"],
+        ppo_config["recurrent_units"],
+        ppo_config["num_mlp_layers"],
+        ppo_config["mlp_neurons"],
+        ppo_config["optimizer"],
+        ppo_config["weight_decay"],
+        ppo_config["recurrent_type"],
     )
     return PPO_agent(**vars(options), **vars(hypers)), options.dvc
 

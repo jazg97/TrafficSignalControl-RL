@@ -5,6 +5,7 @@ This folder mixes maintained training code, exploratory notebooks, saved model a
 - `SignalTrafficOptimization.py`: current PPO + Optuna training/search entry point
 - `SignalTrafficOptimization_Rainbow.py`: Rainbow DQN + Optuna training/search entry point
 - `run_baselines.py`: max-pressure evaluation and one checkpointed a-priori default-PPO run
+- `run_optimized_ppo.py`: retrain selected LSTM/GRU configurations with checkpoints and raw evaluation episodes; see `OPTIMIZED_PPO.md`
 - `simulation.py`: SUMO environment wrapper, reward computation, and metric logging
 - `networks.py`: CNN+LSTM actor/critic definitions
 - `rainbow_networks.py`: modular Rainbow DQN network definition for future Optuna search

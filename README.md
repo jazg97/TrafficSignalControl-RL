@@ -14,6 +14,11 @@ This project aims to optimize traffic signal control using deep reinforcement le
 
 ## Installation
 
+For the current optimized PPO retraining/evaluation workflow, use
+[the experiment guide](Code/OPTIMIZED_PPO.md). It includes the selected best
+LSTM/GRU configurations, environment recreation, checkpoints, raw episode
+metrics, SUMO replay recording/playback, and result-analysis commands.
+
 1. **Clone the repository**:
     ```bash
     git clone https://github.com/jazg97/TrafficSignalControl-RL.git
@@ -24,8 +29,9 @@ This project aims to optimize traffic signal control using deep reinforcement le
     - Install [SUMO](https://www.eclipse.org/sumo/) and ensure it is added to your system's PATH.
     - Install the required Python packages:
     ```bash
-    pip install -r requirements.txt
+    pip install -r requirements-experiment.txt
     ```
+    - Install PyTorch separately using the CPU/CUDA command in the experiment guide.
 
 ## Course Information
 
