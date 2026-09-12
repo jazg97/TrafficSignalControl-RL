@@ -59,7 +59,8 @@ class ModularActor(nn.Module):
             self.conv_layers.append(nn.MaxPool2d((2,2), stride=strides[i]))
             self.out_size = self.compute_output_size(self.out_size, kernel_size=2, stride=strides[i])      
         
-        self.out_features = num_filters[-1]*np.prod(self.out_size)
+        # Newer PyTorch recurrent layers require a Python int, not np.int64.
+        self.out_features = int(num_filters[-1] * np.prod(self.out_size))
         # Create recurrent layer
         self.recurrent = _build_recurrent_layer(recurrent_type, self.out_features, recurrent_units)
 
@@ -138,7 +139,8 @@ class ModularCritic(nn.Module):
             self.conv_layers.append(nn.MaxPool2d((2,2), stride=strides[i]))
             self.out_size = self.compute_output_size(self.out_size, kernel_size=2, stride=strides[i])      
         
-        self.out_features = num_filters[-1]*np.prod(self.out_size)
+        # Keep actor/critic dimensions compatible with strict PyTorch checks.
+        self.out_features = int(num_filters[-1] * np.prod(self.out_size))
         # Create recurrent layer
         self.recurrent = _build_recurrent_layer(recurrent_type, self.out_features, recurrent_units)
 
