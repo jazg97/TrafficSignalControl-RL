@@ -17,6 +17,8 @@ Thumbs.db
 *.tmp
 *.temp
 *~
+~$*
+*.log
 
 # Virtual environments
 .venv/
@@ -36,8 +38,11 @@ optuna_runs/
 */optuna_runs/
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+/Code/ppo_search_120
 
 # Training artifacts
 models/
@@ -45,6 +50,40 @@ models/
 *.pth
 *.pt
 *.ckpt
+
+# Reproducible retraining output (export selected results explicitly when needed)
+/Code/optimized_runs/
+/Code/baseline_runs/
+/results/
+/Code/search_analysis*_outputs/
+
+# Legacy exported episode metrics and plots (keep analysis scripts/notebooks)
+/Code/comparison/
+/Code/eval_rewards*.txt
+/Code/eval_rewards*.png
+/Code/comparison_*.png
+/Code/state_representation*.png
+/Code/top3_arch.csv
+
+# Duplicate experiment trees and archived course presentation
+/Code/Code/
+/ProjetoFinal_272291/
+/Presentation_RL.pptx
+
+# Compiled reports and LaTeX build products (keep .tex/.cls and report figures)
+/Report/*.pdf
+/Report/comparison_queues.png
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.out
+*.toc
+*.synctex.gz
+*.xdv
+*.nav
+*.snm
 
 # Archives
 *.zip
