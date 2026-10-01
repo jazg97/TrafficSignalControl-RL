@@ -38,12 +38,12 @@ PLOT_METRICS = ["avg_speed", "avg_queue_length", "normalized_wait"]
 
 
 def find_repository_root(start: str | Path | None = None) -> Path:
-    """Locate the repository whether the notebook starts in the root or Code/."""
+    """Locate the repository independently of generated result directories."""
     current = Path(start or Path.cwd()).resolve()
     for candidate in (current, *current.parents):
-        if (candidate / "Code").is_dir() and (candidate / "results").is_dir():
+        if (candidate / "Code" / "training_settings.ini").is_file():
             return candidate
-    raise FileNotFoundError("Could not locate repository root containing Code/ and results/.")
+    raise FileNotFoundError("Could not locate repository root containing Code/training_settings.ini.")
 
 
 def _first_existing(paths: list[Path]) -> Path:
@@ -77,7 +77,6 @@ def load_controller_comparison(repo_root: str | Path | None = None) -> dict[str,
         "Max-pressure": root / "results/max_pressure_20260827-114143/evaluation_episodes.csv",
         "PPO (A-priori)": root / "results/ppo_default_20260827-114918/evaluation_episodes.csv",
         "optimized": _first_existing([
-            root / "Code/Code/search_analysis_v3_outputs/csv/wandb_final_evaluation_summary_wide.csv",
             root / "Code/search_analysis_v3_outputs/csv/wandb_final_evaluation_summary_wide.csv",
         ]),
         "optimized_histograms": (

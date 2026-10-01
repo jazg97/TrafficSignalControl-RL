@@ -10,6 +10,7 @@ __pycache__/
 .coverage.*
 
 # Local agent / editor artifacts
+.local/
 .codex_pycache/
 .ipynb_checkpoints/
 .DS_Store
@@ -65,14 +66,16 @@ models/
 /Code/state_representation*.png
 /Code/top3_arch.csv
 
-# Duplicate experiment trees and archived course presentation
+# Legacy local folders (prevent accidental reintroduction)
 /Code/Code/
 /ProjetoFinal_272291/
 /Presentation_RL.pptx
+/Report/
+/Classifier/
+/Environment/
+/notebook/
 
-# Compiled reports and LaTeX build products (keep .tex/.cls and report figures)
-/Report/*.pdf
-/Report/comparison_queues.png
+# LaTeX build products
 *.aux
 *.bbl
 *.blg
@@ -89,3 +92,7 @@ models/
 *.zip
 *.tar
 *.gz
+
+# Optional notebook exports
+/notebooks/**/outputs/
+/alternatives/**/outputs/

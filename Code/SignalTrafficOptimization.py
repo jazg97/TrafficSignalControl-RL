@@ -68,7 +68,6 @@ except ImportError:  # Only the Optuna study path uses W&B.
     wandb = None
 
 from generator import TrafficGenerator
-from memory import Memory     ## Prority Experience Memory 
 from visualization import Visualization
 
 from utils import import_train_configuration,set_sumo, set_train_path,get_model_path
@@ -747,6 +746,9 @@ def main():
                         help="Parallel trials (>=2 requires RDB storage).")
     parser.add_argument("--direction", default="maximize", choices=["maximize", "minimize"])
     args = parser.parse_args()
+
+    # SUMO inputs and generated routes are shared by all script entry points.
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     # Repro (as much as possible with RL)
     #set_global_seeds(args.seed)

@@ -1,0 +1,4 @@
+# Install PyTorch separately to include actor/critic compatibility checks.
+-r requirements-experiment.txt
+pytest>=8,<10
+nbformat==5.10.3

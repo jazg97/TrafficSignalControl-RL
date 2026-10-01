@@ -1,51 +1,82 @@
-# Traffic Signal Control through Deep Reinforcement Learning
+# Deep Reinforcement Learning for Traffic Signal Control
 
-This project aims to optimize traffic signal control using deep reinforcement learning methods. It leverages the SUMO (Simulation of Urban MObility) traffic simulator with the TraCI API to create a realistic traffic environment. The project explores the effectiveness of two reinforcement learning algorithms: Rainbow DQN and PPO.
+Research project for controlling a single SUMO intersection with deep
+reinforcement learning. **PPO is the main workflow**, with configurable CNN
+features and LSTM or GRU memory. Max-pressure and an a-priori PPO controller
+provide controlled baselines. [Rainbow DQN](alternatives/rainbow_dqn/README.md)
+is retained as an alternative model.
 
-## Environment
+New lab members should start with the [getting-started guide](docs/GETTING_STARTED.md),
+then read the [environment and methodology](docs/METHODOLOGY.md).
 
-- **SUMO (Simulation of Urban MObility)**: A traffic simulation tool that models the movement of vehicles in an urban setting.
-- **TraCI API**: An interface that allows interaction between the SUMO simulator and external applications.
+## Repository layout
 
-## Methods
+| Location | Purpose |
+| --- | --- |
+| [`Code/`](Code/README.md) | Maintained PPO, SUMO environment, baselines, evaluation and replay tools |
+| `Code/intersection/` | SUMO network, signal phases, view configuration and example routes |
+| [`docs/`](docs/README.md) | Setup, methodology and experiment protocols |
+| [`notebooks/`](notebooks/README.md) | PPO exploration, traffic-demand demonstrations and historical analysis |
+| [`alternatives/rainbow_dqn/`](alternatives/rainbow_dqn/README.md) | Rainbow training, networks, replay buffers and notebooks |
+| [`tests/`](tests/README.md) | Configuration, evaluation, network and replay checks |
+| [`References/`](References/README.md) | Background papers and reading guidance |
 
-- **Rainbow DQN**: A combination of several improvements to the basic DQN algorithm, including double Q-learning, prioritized replay, dueling networks, multi-step bootstrap targets, distributional DQNs, and noisy networks.
-- **PPO (Proximal Policy Optimization)**: A policy gradient method that alternates between sampling data through interaction with the environment and optimizing a surrogate objective function using stochastic gradient descent.
+Training runs, weights, databases, W&B files and exported results are local
+artifacts excluded from Git. The selected PPO configurations are stored in
+`Code/optimized_ppo_configs.json`, so retraining does not require the historical
+Optuna database or W&B access.
 
-## Installation
+## Setup and first checks
 
-For the current optimized PPO retraining/evaluation workflow, use
-[the experiment guide](Code/OPTIMIZED_PPO.md). It includes the selected best
-LSTM/GRU configurations, environment recreation, checkpoints, raw episode
-metrics, SUMO replay recording/playback, and result-analysis commands.
+Use Python **3.12** and the project runtime versions in
+`requirements-experiment.txt`. Install the SUMO **1.20.0** desktop binaries
+separately, set `SUMO_HOME` and put SUMO's `bin` directory on `PATH`.
+The [setup guide](docs/GETTING_STARTED.md) includes Windows and Linux shell commands.
 
-1. **Clone the repository**:
-    ```bash
-    git clone https://github.com/jazg97/TrafficSignalControl-RL.git
-    cd TrafficSignalControl-RL
-    ```
+From the repository root:
 
-2. **Set up the environment**:
-    - Install [SUMO](https://www.eclipse.org/sumo/) and ensure it is added to your system's PATH.
-    - Install the required Python packages:
-    ```bash
-    pip install -r requirements-experiment.txt
-    ```
-    - Install PyTorch separately using the CPU/CUDA command in the experiment guide.
+```bash
+conda env create -f environment-experiment.yml
+conda activate traffic-rl
+python -m pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cpu
+sumo --version
+python Code/run_optimized_ppo.py --dry-run
+python Code/run_baselines.py --mode validate-topology
+```
 
-## Course Information
+For GPU installation, use the CUDA command in the
+[PPO experiment guide](docs/OPTIMIZED_PPO.md). Optional dependencies are separated
+into `requirements-search.txt`, `requirements-notebooks.txt` and
+`requirements-dev.txt`.
 
-This project was developed as part of the "Aprendiçado por Reforço" course at UNICAMP.
+## Main workflow
 
-## License
+Check one small training/evaluation run before launching the full experiment:
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+```bash
+python Code/run_optimized_ppo.py --configurations ppo_lstm --episodes 1 --eval-turns 1 --volumes 1000 --device cpu --no-replays
+```
 
-## Acknowledgments
+This is a pipeline check. Research comparisons use the full protocol, repeated
+evaluation episodes and matched traffic demands documented in
+[OPTIMIZED_PPO.md](docs/OPTIMIZED_PPO.md) and [BASELINES.md](docs/BASELINES.md).
+The default PPO command trains both selected controllers for 800 episodes each:
 
-- Special thanks to the developers of SUMO and the TraCI API.
-- Inspired by various research papers on traffic signal control and reinforcement learning.
+```bash
+python Code/run_optimized_ppo.py --device cpu
+```
 
-## Contact
+Outputs are written under `Code/optimized_runs/`. Saved checkpoints can be
+reevaluated, and recorded episodes can be replayed or exported as GIF/MP4.
+See the [code map](Code/README.md) for those entry points.
 
-For any inquiries, please contact me at j272291@dac.unicamp.br.
+For new architecture searches, install `requirements-search.txt` and follow the
+[search instructions](docs/GETTING_STARTED.md#optional-architecture-search).
+The notebooks contain earlier implementations and analyses; use the script
+pipeline when producing new comparable PPO results.
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the environment or
+experiment protocol. Keep notebook outputs and generated experiment files out
+of commits, and run the relevant [checks](tests/README.md) before sharing changes.

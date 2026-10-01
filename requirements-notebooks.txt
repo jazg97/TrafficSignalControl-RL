@@ -1,0 +1,7 @@
+# Optional historical training and search-analysis notebooks.
+-r requirements-search.txt
+jupyterlab==4.1.5
+nbformat==5.10.3
+gymnasium==0.29.1
+seaborn==0.13.2
+plotly==5.24.0

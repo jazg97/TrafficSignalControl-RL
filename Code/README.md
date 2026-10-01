@@ -1,34 +1,60 @@
-# Code Overview
+# Maintained PPO and SUMO code
 
-This folder mixes maintained training code, exploratory notebooks, saved model artifacts, and exported metrics. The main reusable entry points are:
+Run these scripts from the **repository root**. The PPO and baseline runners
+locate `Code/` themselves. The main path uses the frozen LSTM/GRU configurations
+and does not require Optuna or W&B.
 
-- `SignalTrafficOptimization.py`: current PPO + Optuna training/search entry point
-- `SignalTrafficOptimization_Rainbow.py`: Rainbow DQN + Optuna training/search entry point
-- `run_baselines.py`: max-pressure evaluation and one checkpointed a-priori default-PPO run
-- `run_optimized_ppo.py`: retrain selected LSTM/GRU configurations with checkpoints and raw evaluation episodes; see `OPTIMIZED_PPO.md`
-- `simulation.py`: SUMO environment wrapper, reward computation, and metric logging
-- `networks.py`: CNN+LSTM actor/critic definitions
-- `rainbow_networks.py`: modular Rainbow DQN network definition for future Optuna search
-- `generator.py`: traffic-demand generation for each episode
-- `utils.py`: SUMO setup and model-path helpers
+## Entry points
 
-The notebooks are best read by purpose:
+| File | Purpose |
+| --- | --- |
+| `run_optimized_ppo.py` | Retrain selected PPO configurations, save checkpoints and evaluate matched demands |
+| `run_baselines.py` | Validate signal topology, evaluate max-pressure, train/evaluate the a-priori PPO baseline |
+| `SignalTrafficOptimization.py` | PPO agent/update logic and optional Optuna architecture search |
+| `compare_baseline_results.py` | Compare two full evaluation CSV sweeps, including paired episode differences |
+| `replay_episode.py` | Replay recorded trajectories and actual signals through SUMO |
+| `render_evaluation_replay.py` | Export one recorded segment as GIF/MP4, including the presentation layout |
+| `render_comparison_replay.py` | Export a synchronized, matched LSTM/GRU replay comparison |
 
-- Training: `DiscretePPO_TrafficSignalControl*.ipynb`, `RainbowDQN_TrafficSignalControl.ipynb`
-- Evaluation: `Evaluation_PPO.ipynb`, `Evaluation_RainbowDQN.ipynb`
-- Analysis: `Optuna_Analysis.ipynb`, `ModelComparison.ipynb`
+The [PPO guide](../docs/OPTIMIZED_PPO.md) documents checkpoints, evaluation,
+recordings and video export. The [baseline protocol](../docs/BASELINES.md)
+documents controller definitions and compatibility caveats.
 
-Reproducibility notes:
+## Shared modules
 
-- The maintained PPO search path is the script-based pipeline in `SignalTrafficOptimization.py`; notebook experiments should be treated as exploratory unless their logic has been promoted into modules.
-- `training_settings.ini` and the SUMO files under `intersection/` define the environment configuration used by the script entry points.
-- Trial-to-trial reproducibility is partial rather than strict because RL optimization, SUMO dynamics, PyTorch kernels, and Optuna scheduling can still introduce variance.
-- Final model selection in `SignalTrafficOptimization.py` is based on evaluation across multiple traffic volumes, not only the training demand.
-- Baseline protocol, output schema, timing compatibility findings, and commands are documented in `BASELINES.md`.
+| File | Responsibility |
+| --- | --- |
+| `simulation.py` | SUMO loop, state encoding, phase execution, reward and episode metrics |
+| `networks.py` | Modular CNN + LSTM/GRU actor and critic |
+| `generator.py` | Episode demand generation and route-file writing |
+| `controllers.py` | Max-pressure action selection and signal-to-lane topology validation |
+| `utils.py` | SUMO setup, configuration and model-path helpers |
+| `episode_recording.py` | Portable trajectory, signal and trip recording inputs |
+| `presentation_replay.py` | Reconstructed recording metrics and presentation rendering helpers |
+| `visualization.py` | Plotting helper used by historical search/training code |
+| `optimized_ppo_configs.json` | Frozen selected LSTM and GRU parameters with trial provenance |
+| `training_settings.ini` | Shared SUMO configuration filename and model output folder |
 
-Architecture notes:
+`intersection/` contains the maintained scenario. `episode_routes.rou.xml` is a
+versioned example that training rewrites; the optimized runner restores it on
+exit. All runners share this route path, so use one simulation/training process
+per checkout.
 
-- PPO is the main branch for the architecture-search/generalization work.
-- Rainbow DQN is kept as a comparison baseline and uses a different replay-memory stack (`memory.py`, `segment_tree.py`).
-- The original Rainbow implementation is notebook-centric, but `rainbow_networks.py` provides a reusable configurable model for script-based experiments.
-- The current state representation is a `3 x 48 x 46` crop centered on the intersection, built from a larger occupancy grid.
+## Historical analysis tools
+
+`controller_baseline_comparison.py`, `export_wandb_histogram_uncertainty.py` and
+`export_wandb_reward_episodes.py` support the previous four-controller study.
+They require its exported results; W&B exports also require credentials and
+`requirements-search.txt`. Their historical inputs are documented in
+[the notebook guide](../notebooks/README.md).
+
+## Local outputs
+
+Runs are written to ignored `optimized_runs/`, `baseline_runs/`, `models/`,
+`optuna_runs/` and `search_analysis*_outputs/` directories. Root-level `results/`
+holds analysis exports. Include only deliberately selected, documented research
+artifacts when sharing a dataset.
+
+Exploratory PPO notebooks are under [`notebooks/ppo/`](../notebooks/ppo/).
+Rainbow networks and replay buffers live under
+[`alternatives/rainbow_dqn/`](../alternatives/rainbow_dqn/README.md).

@@ -1,0 +1,5 @@
+# Optional PPO / Rainbow Optuna search and W&B export tools.
+-r requirements-experiment.txt
+optuna==4.5.0
+wandb==0.17.8
+pandas==2.3.2
